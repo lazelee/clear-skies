@@ -1,45 +1,69 @@
-# Astro-Night-Checker: 16-Day Astrophotography Forecasting Engine
+# Astro Night Checker
 
-astro-night-checker is a Python and SQL data pipeline designed to streamline the planning phase of deep-sky astrophotography. Capturing targets like the Andromeda Galaxy (M31) requires a strict intersection of variables: long, uninterrupted dark-sky windows, minimal lunar interference, and low cloud cover to ensure clean sub-exposures for stacking in image processing tools.
+A 16-day astrophotography planner with a local web dashboard. For any place on Earth it finds the
+**dark, clear, moon-free hours** when your target is high enough to shoot, ranks every night, and
+explains in plain English what's stopping the bad ones.
 
-Rather than manually cross-referencing planetarium software and meteorological models across multiple platforms, this pipeline evaluates every hour between sunset and sunrise over a 16-day forecast for any target location globally. It identifies the longest continuous blocks of shootable skies, computes exact lunar ephemeris natively, logs forecast runs into a local SQLite database, and dispatches a structured HTML schedule directly to your email on demand.
+<p align="center"><img src="assets/ui_overview.png" width="760" alt="Astro Night Checker dashboard"></p>
 
-## Core Features
-*   **Dynamic Global Targeting:** Geocodes any city and country input to pull exact local coordinates and evaluate location-specific weather arrays.
-*   **Continuous Window Optimization:** Ranks atmospheric data across each night to find the longest uninterrupted blocks of clear skies between sunset and sunrise to maximize total integration time.
-*   **Native Ephemeris Engine:** Calculates the true ecliptic longitudinal separation between the Sun and Moon to append precise lunar phase classifications directly to each optimal shooting window.
-*   **Formatted Email Dispatch:** Compiles optimal shooting dates, sun event times, window durations, average cloud cover, and precipitation chances into a responsive HTML table sent directly to your inbox upon script execution.
-<p align="center">
-  <img src="assets/email_preview.png" width="600" alt="Email Table Preview">
-</p>
+## What it checks
+Every 10 minutes of every night, a slot counts as **shootable** only when all of these hold:
 
-## Data Sources & APIs
-*   **[Open-Meteo Geocoding API](https://open-meteo.com/en/docs/geocoding-api):** Keyless endpoint used to resolve global string inputs (City, Country) into precise latitude, longitude, and elevation coordinates.
-*   **[Open-Meteo Weather API](https://open-meteo.com/en/docs):** Supplies 16-day hourly arrays for cloud cover and precipitation probability, alongside daily sunset and sunrise timestamps adjusted automatically to local time zones.
-*   **[Astropy](https://www.astropy.org/):** Powers the offline astronomical mathematical engine for planetary coordinates, time handling, and reference frame transformations.
-*   **[Light Pollution Map](https://lightpollutionmap.app/):** Referenced manually to construct the script's static Bortle scale dictionary for localized sky quality estimation.
+| Condition | Default | How |
+| --- | --- | --- |
+| Astronomical darkness | sun below −18° | Astropy ephemeris, computed locally |
+| Cloud cover | ≤ 25% | Open-Meteo hourly total cloud (low/mid/high shown too) |
+| Rain chance | ≤ 15% | Open-Meteo precipitation probability |
+| Target altitude | ≥ 30° | Offline catalog of ~30 popular targets (M31, M42, NGC 7000, the Milky Way core…) |
+| Moon | below the horizon, or ≤ 25% lit | Moon altitude + illumination, not just phase |
 
-## Installation & Setup
+Each night then gets a **0–100 score** (weighted towards long unbroken runs, which is what stacking needs),
+a verdict (Excellent / Good / Marginal / Poor), the best window, moon rise/set, target peak and transit,
+dew risk, wind and temperature. All limits are adjustable in the app.
 
-1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/lazelee/astro-night-checker.git](https://github.com/lazelee/astro-night-checker.git)
-    cd astro-night-checker
-    ```
+## Run the dashboard
+```bash
+pip install -r requirements.txt
+python app.py
+```
+Open **http://localhost:5050**.
 
-2.  **Install dependencies:**
-    ```bash
-    pip install requests pandas astropy python-dotenv
-    ```
+- Search any city ("Gravenhurst Ontario", "Toronto, Canada") or use your device's location
+- Pick a target, tweak limits, and save locations with their Bortle class
+- Click a night for a timeline chart (twilight, cloud, rain, target and moon altitude, shootable blocks) and an hour-by-hour table
+- **Add to calendar** downloads an `.ics` event for the best window with a 1-hour setup reminder
+- **Night vision** switches the whole UI to red, so checking it at the telescope doesn't ruin your dark adaptation
+- **History** lists past forecasts from the local SQLite log
 
-3.  **Configure Environment Variables:**
-    Create a `.env` file in the root directory and add your email credentials:
-    ```env
-    SENDER_EMAIL=your_email@gmail.com
-    APP_PASSWORD=your_16_digit_app_password
-    ```
+<p align="center"><img src="assets/ui_night_detail.png" width="760" alt="Night detail with timeline chart"></p>
 
-4.  **Run the Pipeline:**
-    ```bash
-    python pipeline.py
-    ```
+## Command line and email
+The original email workflow still works headless (e.g. from cron):
+```bash
+python pipeline.py --city Gravenhurst --country Canada --target M31 --email
+python pipeline.py --list-targets
+```
+Email is optional. To enable it (CLI and the **Email forecast** button), copy `.env.example` to `.env`
+and add a Gmail address plus an [App Password](https://myaccount.google.com/apppasswords).
+
+<p align="center"><img src="assets/email_preview.png" width="520" alt="Email table preview"></p>
+
+## Project layout
+```
+app.py            Flask server + JSON API (localhost:5050)
+pipeline.py       command-line run, optional email
+astro/
+  planner.py      night windows, scoring, reasons
+  sky.py          sun/moon/target positions (Astropy, offline)
+  weather.py      Open-Meteo forecast (cached 30 min)
+  geo.py          place search
+  targets.py      target catalog
+  db.py           SQLite: runs, nightly results, saved locations
+  emailer.py      HTML email
+static/           dashboard (vanilla JS, no build step)
+```
+
+## Data sources
+- [Open-Meteo](https://open-meteo.com): geocoding and 16-day hourly weather, no API key needed
+- [Astropy](https://www.astropy.org): sun, moon and target positions, computed on your machine
+- [Light Pollution Map](https://lightpollutionmap.app): look up the Bortle class to save with a location
