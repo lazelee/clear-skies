@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#070a12" />
+    <title>Astro Night Checker</title>
+    <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="top">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11" class="bm-disc" /><path d="M16 5a11 11 0 0 1 0 22a7 11 0 0 0 0-22z" class="bm-lit" /><circle cx="27" cy="6" r="1.4" class="bm-star" /><circle cx="5" cy="25" r="1" class="bm-star" /></svg>
+          <div>
+            <h1>Astro Night Checker</h1>
+            <p class="tagline">Dark, clear, moon-free hours for the next two weeks</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button id="historyBtn" class="btn ghost" type="button">History</button>
+          <button id="redBtn" class="btn ghost" type="button" aria-pressed="false" title="Red night-vision mode keeps your eyes dark-adapted">
+            <span class="dot-red" aria-hidden="true"></span>Night vision
+          </button>
+        </div>
+      </header>
+
+      <section class="controls card" aria-label="Location and target">
+        <div class="field grow">
+          <label for="locInput">Location</label>
+          <div class="search">
+            <input id="locInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search a city, e.g. Gravenhurst" role="combobox" aria-expanded="false" aria-controls="locList" aria-autocomplete="list" />
+            <ul id="locList" class="suggest" role="listbox" hidden></ul>
+          </div>
+        </div>
+        <button id="geoBtn" class="btn ghost icon-text" type="button" title="Use this device's location">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><circle cx="12" cy="12" r="7" /></svg>
+          <span>My location</span>
+        </button>
+        <div class="field">
+          <label for="targetSelect">Target</label>
+          <select id="targetSelect"></select>
+        </div>
+        <button id="settingsBtn" class="btn ghost icon-text" type="button" aria-controls="drawer">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg>
+          <span>Limits</span>
+        </button>
+        <div id="saved" class="saved" aria-label="Saved locations"></div>
+      </section>
+
+      <div id="status" class="status" role="status" aria-live="polite" hidden></div>
+
+      <main id="results" hidden>
+        <section id="hero" class="hero card" aria-live="polite"></section>
+
+        <section class="nights-wrap">
+          <div class="section-head">
+            <h2>Nights ahead</h2>
+            <p class="legend">
+              <span><i class="sw excellent"></i>Excellent</span><span><i class="sw good"></i>Good</span><span><i class="sw marginal"></i>Marginal</span><span><i class="sw poor"></i>Poor</span>
+            </p>
+          </div>
+          <div id="nights" class="nights" role="list"></div>
+        </section>
+
+        <section id="detail" class="detail card" aria-live="polite"></section>
+      </main>
+
+      <footer class="foot">
+        Weather: <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> · Ephemeris: <a href="https://www.astropy.org" target="_blank" rel="noopener">Astropy</a> (computed locally) · Sky brightness: <a href="https://lightpollutionmap.app" target="_blank" rel="noopener">Light Pollution Map</a>
+      </footer>
+    </div>
+
+    <aside id="drawer" class="drawer" hidden>
+      <div class="drawer-card" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+        <header class="drawer-head">
+          <h2 id="drawerTitle">Shooting limits</h2>
+          <button id="drawerClose" class="icon-btn" type="button" aria-label="Close">×</button>
+        </header>
+        <p class="muted small">A 10-minute slot counts as shootable only when it's astronomically dark and every limit below is met.</p>
+        <div class="slider"><label for="s_max_cloud">Max cloud cover</label><output id="o_max_cloud"></output><input id="s_max_cloud" data-key="max_cloud" type="range" min="0" max="100" step="5" /></div>
+        <div class="slider"><label for="s_max_precip">Max rain chance</label><output id="o_max_precip"></output><input id="s_max_precip" data-key="max_precip" type="range" min="0" max="100" step="5" /></div>
+        <div class="slider"><label for="s_min_alt">Min target altitude</label><output id="o_min_alt"></output><input id="s_min_alt" data-key="min_alt" type="range" min="0" max="80" step="5" /></div>
+        <div class="slider"><label for="s_moon_tol">Moon allowed up if lit ≤</label><output id="o_moon_tol"></output><input id="s_moon_tol" data-key="moon_tol" type="range" min="0" max="100" step="5" /></div>
+        <hr />
+        <div class="field">
+          <label for="bortleSelect">Bortle class for <span id="bortleLoc">this location</span></label>
+          <select id="bortleSelect">
+            <option value="">Unknown</option>
+            <option value="1">1 · Excellent dark site</option>
+            <option value="2">2 · Typical dark site</option>
+            <option value="3">3 · Rural sky</option>
+            <option value="4">4 · Rural / suburban transition</option>
+            <option value="5">5 · Suburban sky</option>
+            <option value="6">6 · Bright suburban sky</option>
+            <option value="7">7 · Suburban / urban transition</option>
+            <option value="8">8 · City sky</option>
+            <option value="9">9 · Inner-city sky</option>
+          </select>
+          <p class="muted small">Look it up on <a href="https://lightpollutionmap.app" target="_blank" rel="noopener">lightpollutionmap.app</a>. Setting it saves this location.</p>
+        </div>
+        <div class="drawer-actions">
+          <button id="resetLimits" class="btn ghost" type="button">Reset defaults</button>
+          <button id="applyLimits" class="btn primary" type="button">Apply</button>
+        </div>
+      </div>
+    </aside>
+
+    <dialog id="historyDlg" class="dlg">
+      <header class="drawer-head">
+        <h2>Recent forecasts</h2>
+        <button class="icon-btn" type="button" data-close aria-label="Close">×</button>
+      </header>
+      <div id="historyBody" class="history-body"></div>
+    </dialog>
+
+    <div id="tip" class="chart-tip" hidden></div>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

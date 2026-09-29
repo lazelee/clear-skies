@@ -1,0 +1,147 @@
+"""Local web UI for Astro Night Checker: python app.py → http://localhost:5050"""
+import os
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from dotenv import load_dotenv
+from flask import Flask, Response, jsonify, request, send_from_directory
+
+from astro import db, emailer, geo, planner, targets
+
+load_dotenv()
+db.init()
+app = Flask(__name__, static_folder="static", static_url_path="/static")
+
+
+def _location_from_args(args):
+    try:
+        lat = float(args["lat"])
+        lon = float(args["lon"])
+    except (KeyError, ValueError):
+        raise ValueError("lat and lon are required")
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise ValueError("lat/lon out of range")
+    return {
+        "label": args.get("label") or f"{lat:.3f}, {lon:.3f}",
+        "lat": lat,
+        "lon": lon,
+        "elevation": float(args.get("elevation") or 0),
+        "timezone": args.get("timezone") or None,
+    }
+
+
+def _plan(args):
+    return planner.plan(_location_from_args(args), args.get("target", "none"), args)
+
+
+@app.errorhandler(ValueError)
+def bad_request(err):
+    return jsonify(error=str(err)), 400
+
+
+@app.errorhandler(geo.LookupError_)
+def upstream(err):
+    return jsonify(error=str(err)), 502
+
+
+@app.get("/")
+def index():
+    return send_from_directory(app.static_folder, "index.html")
+
+
+@app.get("/api/search")
+def search():
+    return jsonify(results=geo.search(request.args.get("q", "")))
+
+
+@app.get("/api/targets")
+def target_list():
+    return jsonify(targets=targets.as_list(), defaults=planner.DEFAULTS)
+
+
+@app.get("/api/forecast")
+def forecast():
+    plan = _plan(request.args)
+    plan["run_id"] = db.log_run(plan)
+    plan["email_ready"] = emailer.configured()
+    return jsonify(plan)
+
+
+@app.get("/api/ics")
+def ics():
+    plan = _plan(request.args)
+    night = next((n for n in plan["nights"] if n["date"] == request.args.get("date")), None)
+    if not night or not night["best_window"]:
+        return jsonify(error="No shootable window that night"), 404
+    tz = ZoneInfo(plan["location"]["timezone"])
+    day = datetime.fromisoformat(night["date"])
+    start_s, end_s = night["best_window"].split("–")
+
+    def at(hhmm):
+        h, m = map(int, hhmm.split(":"))
+        dt = day.replace(hour=h, minute=m, tzinfo=tz)
+        return dt + timedelta(days=1) if h < 12 else dt  # after midnight → next calendar day
+
+    start, end = at(start_s), at(end_s)
+    fmt = lambda d: d.astimezone(ZoneInfo("UTC")).strftime("%Y%m%dT%H%M%SZ")  # noqa: E731
+    target = plan["target"]
+    what = target["name"] if target["id"] != "none" else "Astrophotography"
+    desc = " ".join(night["reasons"]) + f" Moon {night['moon']['illumination']}% ({night['moon']['phase']})."
+    body = "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//astro-night-checker//EN", "BEGIN:VEVENT",
+        f"UID:{night['date']}-{target['id']}-{plan['location']['lat']:.3f}{plan['location']['lon']:.3f}@astro-night-checker",
+        f"DTSTAMP:{fmt(datetime.now(tz))}", f"DTSTART:{fmt(start)}", f"DTEND:{fmt(end)}",
+        f"SUMMARY:{what} — {night['verdict']} night ({night['score']})",
+        f"LOCATION:{plan['location']['label']}",
+        "DESCRIPTION:" + desc.replace(",", "\\,").replace(";", "\;"),
+        "BEGIN:VALARM", "TRIGGER:-PT60M", "ACTION:DISPLAY", "DESCRIPTION:Set up the rig", "END:VALARM",
+        "END:VEVENT", "END:VCALENDAR", "",
+    ])
+    name = f"astro-{night['date']}-{target['id']}.ics"
+    return Response(body, mimetype="text/calendar", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/email")
+def email():
+    args = request.get_json(silent=True) or {}
+    try:
+        to = emailer.send(_plan(args))
+    except emailer.EmailNotConfigured as err:
+        return jsonify(error=str(err)), 400
+    except Exception as err:  # SMTP/auth failures: report, don't crash
+        return jsonify(error=f"Email failed: {err}"), 502
+    return jsonify(ok=True, to=to)
+
+
+@app.get("/api/locations")
+def locations():
+    return jsonify(locations=db.locations())
+
+
+@app.post("/api/locations")
+def save_location():
+    body = request.get_json(silent=True) or {}
+    loc = _location_from_args(body)
+    bortle = body.get("bortle")
+    bortle = int(bortle) if bortle not in (None, "") else None
+    if bortle is not None and not 1 <= bortle <= 9:
+        raise ValueError("Bortle must be 1–9")
+    db.save_location(loc["label"], loc["lat"], loc["lon"], loc["elevation"], loc["timezone"], bortle)
+    return jsonify(locations=db.locations())
+
+
+@app.delete("/api/locations/<int:loc_id>")
+def delete_location(loc_id):
+    db.delete_location(loc_id)
+    return jsonify(locations=db.locations())
+
+
+@app.get("/api/history")
+def history():
+    return jsonify(runs=db.history())
+
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "5050"))
+    print(f"\n  Astro Night Checker → http://localhost:{port}\n")
+    app.run(host="127.0.0.1", port=port, debug=False)
