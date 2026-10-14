@@ -128,6 +128,9 @@ select { padding-right: 32px; }
 .suggest li { padding: 9px 10px; border-radius: 9px; cursor: pointer; }
 .suggest li small { display: block; color: var(--muted); font-size: 12px; }
 .suggest li[aria-selected="true"], .suggest li:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.suggest li.resolve { color: var(--accent); }
+.suggest li[aria-disabled="true"] { cursor: default; color: var(--muted); }
+.suggest li[aria-disabled="true"]:hover { background: none; }
 .saved { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
 .saved:empty { display: none; }
 .chip {

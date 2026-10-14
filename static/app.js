@@ -25,6 +25,7 @@ const store = {
 const state = {
   location: store.get("location", null),
   target: store.get("target", "M31"),
+  targetLabel: store.get("targetLabel", null),
   settings: store.get("settings", null),
   defaults: null,
   targets: [],
@@ -122,14 +123,14 @@ function renderHero() {
   const { plan } = state;
   const loc = plan.location;
   const target = plan.target;
-  const bortle = loc.bortle ? `Bortle ${loc.bortle}` : "Bortle ?";
+  const bortle = `Bortle ${loc.bortle} · SQM ${Number(loc.sqm).toFixed(1)}`;
   const isSaved = state.saved.some((s) => sameSpot(s, loc));
   const best = plan.best && plan.nights.find((n) => n.date === plan.best.date);
   const eyebrow = `
     <p class="hero-eyebrow">
       <span>${esc(loc.label)}</span>
-      <button class="pill link" type="button" data-act="bortle" title="Set the sky brightness for this spot">${bortle}</button>
-      <span class="pill">${esc(target.id === "none" ? "No target" : target.short)}</span>
+      <button class="pill link" type="button" data-act="bortle" title="Sky brightness: ${esc(loc.sky_source)}. Click to override.">${bortle}</button>
+      <span class="pill" title="${esc(target.type)} · ${esc(target.source || "")}">${esc(target.kind === "none" ? "No target" : target.short)}</span>
     </p>`;
   let body;
   if (best) {
@@ -137,14 +138,14 @@ function renderHero() {
     body = `
       <h2>Best night: ${esc(best.label)} · ${esc(best.best_window)}</h2>
       <p class="facts">
-        <span><b>${best.usable_hours} h</b> shootable</span>
+        <span><b>${best.effective_hours} h</b> ${esc(plan.metric.label)} <span class="muted">of ${best.usable_hours} h clear</span></span>
         <span>Score <b>${best.score}</b> <span class="verdict ${verdictClass(best.verdict)}">${best.verdict}</span></span>
         <span>Moon <b>${best.moon.illumination}%</b> ${esc(best.moon.phase.toLowerCase())}</span>
         <span>Cloud <b>${best.avg_cloud ?? "—"}%</b></span>
         ${best.confidence ? `<span>Clear in <b>${best.confidence.chance}%</b> of forecast runs <span class="${confClass(best.confidence)}">${best.confidence.level} confidence</span></span>` : ""}
         ${t}
       </p>
-      <p class="muted small" style="margin-top:6px">${plan.good_nights} good or better night${plan.good_nights === 1 ? "" : "s"} in the next ${plan.nights.length}.${plan.ensemble ? " Best night weighs score by how many forecast runs agree." : " Forecast confidence unavailable right now."}</p>`;
+      <p class="muted small" style="margin-top:6px" title="${esc(plan.metric.explain)}">${plan.good_nights} good or better night${plan.good_nights === 1 ? "" : "s"} in the next ${plan.nights.length}.${plan.ensemble ? " Best night weighs score by how many forecast runs agree." : " Forecast confidence unavailable right now."}</p>`;
   } else {
     body = `
       <h2>No shootable nights in the forecast</h2>
@@ -179,11 +180,11 @@ function renderNights() {
       </div>
       <div class="night-mid">
         ${moonSvg(n.moon.elongation, south)}
-        <div class="night-stat">${n.usable_hours ? `<b>${n.usable_hours} h</b> clear` : "No window"}<br /><span class="verdict ${verdictClass(n.verdict)}">${n.verdict}</span>${showConf(n.confidence) ? `<br /><span class="${confClass(n.confidence)}" title="Share of ensemble forecast runs that keep this clear">${confText(n.confidence)}</span>` : ""}</div>
+        <div class="night-stat">${n.usable_hours ? `<b>${n.effective_hours} h</b> of ${n.usable_hours} h` : "No window"}<br /><span class="verdict ${verdictClass(n.verdict)}">${n.verdict}</span>${showConf(n.confidence) ? `<br /><span class="${confClass(n.confidence)}" title="Share of ensemble forecast runs that keep this clear">${confText(n.confidence)}</span>` : ""}</div>
       </div>
       ${cloudBar(n)}
       <p class="night-why">${esc(n.reasons[0] || "")}</p>`;
-    btn.setAttribute("aria-label", `${n.label}: ${n.verdict}, score ${n.score}${showConf(n.confidence) ? `, ${confText(n.confidence)}` : ""}. ${n.reasons[0] || ""}`);
+    btn.setAttribute("aria-label", `${n.label}: ${n.verdict}, score ${n.score}, ${n.effective_hours} effective hours${showConf(n.confidence) ? `, ${confText(n.confidence)}` : ""}. ${n.reasons[0] || ""}`);
     btn.addEventListener("click", () => {
       state.selected = n.date;
       $$(".night", list).forEach((el) => el.setAttribute("aria-current", String(el === btn)));
@@ -254,13 +255,16 @@ function renderDetail() {
   const events = [n.moon.rise && `rises ${n.moon.rise}`, n.moon.set && `sets ${n.moon.set}`].filter(Boolean);
   const moonUp = events.length ? events.join(" · ") : n.moon.up_fraction > 0.5 ? "up all night" : "down all night";
   const tiles = [
-    ["Shootable", n.usable_hours ? `${n.usable_hours} h` : "None", n.windows.length ? n.windows.join(", ") : "no window meets your limits"],
-    ["Darkness", n.dark_start ? `${n.dark_start}–${n.dark_end}` : "None", n.darkness === "astronomical" ? `${n.dark_hours} h astronomical` : n.darkness === "nautical" ? "nautical twilight only" : "never dark"],
-    ["Moon", `${n.moon.illumination}% lit`, `${n.moon.phase} · ${moonUp}`],
-    n.target ? [target.short, `${n.target.peak_alt}° peak`, `at ${n.target.peak_time} · ${n.target.hours_above_min} h above ${state.plan.settings.min_alt}°`] : null,
+    ["Effective", n.usable_hours ? `${n.effective_hours} h` : "None", n.usable_hours ? `${state.plan.metric.label}, of ${n.usable_hours} h clear: ${n.windows.join(", ")}` : "no window meets your limits"],
+    ["Darkness", n.dark_start ? `${n.dark_start}–${n.dark_end}` : "None", n.darkness === "astronomical" ? `${n.dark_hours} h astronomical${n.polar ? ` · ${n.polar}` : ""}` : n.darkness === "civil" ? `${n.dark_hours} h after civil dusk` : n.darkness === "nautical" ? "nautical twilight only" : `never dark${n.polar ? ` · ${n.polar}` : ""}`],
+    ["Moon", `${n.moon.illumination}% lit`, `${n.moon.phase} · ${moonUp}${n.sky.moon_mag ? ` · sky +${n.sky.moon_mag} mag${n.target ? ` at ${target.short}` : ""}` : ""}${n.moon.separation != null ? ` · ${n.moon.separation}° away` : ""}`],
+    n.target ? [target.short, `${n.target.peak_alt}° peak`, `at ${n.target.peak_time}${n.target.min_airmass ? ` · airmass ${n.target.min_airmass}` : ""} · ${n.target.hours_above_min} h above ${state.plan.settings.min_alt}°`] : null,
+    ["Sky", `SQM ${Number(state.plan.location.sqm).toFixed(2)}`, `Bortle ${state.plan.location.bortle} · ${state.plan.location.sky_source}`],
+    n.sky.extinction != null ? ["Transparency", n.sky.aod != null ? `AOD ${n.sky.aod}` : `${n.sky.extinction} mag`, `${n.sky.extinction} mag/airmass extinction${n.sky.aod != null ? "" : " (typical air; haze forecast covers ~5 days)"}`] : null,
+    n.sky.seeing ? ["Seeing", n.sky.seeing[0].toUpperCase() + n.sky.seeing.slice(1), `jet stream ${n.sky.jet} km/h (forecast proxy)`] : null,
     n.confidence ? ["Confidence", `${n.confidence.chance}%`, `${n.confidence.level ? `${n.confidence.level} · ` : "chance of clearing · "}${n.confidence.models.length} model${n.confidence.models.length === 1 ? "" : "s"}, ${n.confidence.members} runs`] : null,
     ["Cloud", n.avg_cloud != null ? `${n.avg_cloud}%` : "—", `low ${n.clouds.low ?? "—"} · mid ${n.clouds.mid ?? "—"} · high ${n.clouds.high ?? "—"}`],
-    ["Conditions", n.min_temp != null ? `${n.min_temp}°C low` : "—", `wind ${n.avg_wind ?? "—"} km/h${n.dew_risk ? " · dew risk" : ""}`],
+    ["Conditions", n.min_temp != null ? `${n.min_temp}°C low` : "—", `wind ${n.avg_wind ?? "—"} km/h${n.max_gust != null ? `, gusts ${n.max_gust}` : ""}${n.dew ? ` · dew ${n.dew}` : ""}`],
     ["Sun", n.sunset ? `↓ ${n.sunset}` : "—", n.sunrise ? `rises ${n.sunrise}` : ""],
   ].filter(Boolean);
   const icsHref = hasWindow ? `/api/ics?${queryParams({ date: n.date })}` : null;
@@ -375,16 +379,12 @@ function chartSvg(n) {
   parts.push(`<path d="${curve(tl.moon)}" fill="none" stroke-width="2" stroke-dasharray="1 0" style="stroke:var(--moon);opacity:${moonOpacity}" />`);
   if (tl.target) parts.push(`<path d="${curve(tl.target)}" fill="none" stroke-width="2.6" style="stroke:var(--target)" />`);
 
-  // Shootable strip.
-  start = -1;
-  for (let i = 0; i <= N; i++) {
-    const ok = i < N && tl.shoot[i];
-    if (ok && start < 0) start = i;
-    if (!ok && start >= 0) {
-      parts.push(`<rect x="${x(start) - bw / 2}" y="${CH.shootY}" width="${(i - start) * bw}" height="10" rx="3" style="fill:var(--shoot)" />`);
-      start = -1;
-    }
-  }
+  // Shootable strip, each slot shaded by how much it's worth (moonlight, altitude, haze, cloud).
+  tl.shoot.forEach((ok, i) => {
+    if (!ok) return;
+    const q = tl.quality ? Math.max(0, Math.min(1, tl.quality[i] ?? 0)) : 1;
+    parts.push(`<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${CH.shootY}" width="${(bw + 0.6).toFixed(1)}" height="10" style="fill:var(--shoot);opacity:${(0.25 + 0.75 * q).toFixed(2)}" />`);
+  });
   parts.push(`<text class="panel-label" x="${CH.l - 6}" y="${CH.shootY + 9}" text-anchor="end">GO</text>`);
 
   // Hour labels.
@@ -419,14 +419,15 @@ function wireChart(n) {
     cursor.style.opacity = 0.5;
     const row = (k, v) => `<div class="row"><span>${k}</span><span>${v}</span></div>`;
     const f = (v, u = "") => (v == null ? "—" : `${Math.round(v)}${u}`);
-    tip.innerHTML = `<b>${tl.labels[i]}</b> ${tl.shoot[i] ? '<span class="verdict v-excellent">· shootable</span>' : ""}
+    tip.innerHTML = `<b>${tl.labels[i]}</b> ${tl.shoot[i] ? `<span class="verdict v-excellent">· shootable, ${Math.round((tl.quality?.[i] ?? 1) * 100)}% value</span>` : ""}
       ${row("Sun", f(tl.sun[i], "°"))}
       ${tl.target ? row(esc(state.plan.target.short), f(tl.target[i], "°")) : ""}
-      ${row("Moon", f(tl.moon[i], "°"))}
+      ${row("Moon", `${f(tl.moon[i], "°")}${tl.moon_mag?.[i] ? ` <small class="muted">sky +${tl.moon_mag[i].toFixed(1)} mag</small>` : ""}`)}
       ${row("Cloud", `${f(tl.cloud[i], "%")} <small class="muted">(L${f(tl.low[i])} M${f(tl.mid[i])} H${f(tl.high[i])})</small>`)}
       ${row("Rain", f(tl.precip[i], "%"))}
       ${row("Temp / dew", `${f(tl.temp[i], "°")} / ${f(tl.dew[i], "°")}`)}
-      ${row("Wind", f(tl.wind[i], " km/h"))}`;
+      ${row("Wind", `${f(tl.wind[i], " km/h")}${tl.gust?.[i] != null ? ` <small class="muted">gusts ${f(tl.gust[i])}</small>` : ""}`)}
+      ${tl.jet?.[i] != null ? row("Jet stream", f(tl.jet[i], " km/h")) : ""}`;
     tip.hidden = false;
     const tw = tip.offsetWidth;
     const th = tip.offsetHeight;
@@ -450,10 +451,10 @@ function hourTable(n) {
   tl.labels.forEach((lab, i) => {
     if (!lab.endsWith(":00") || tl.sun[i] > 0) return;
     const f = (v, u = "") => (v == null ? "—" : `${Math.round(v)}${u}`);
-    rows.push(`<tr class="${tl.shoot[i] ? "ok" : ""}"><td>${lab}</td><td>${f(tl.sun[i], "°")}</td>${tl.target ? `<td>${f(tl.target[i], "°")}</td>` : ""}<td>${f(tl.moon[i], "°")}</td><td>${f(tl.cloud[i], "%")}</td>${tl.clear_chance ? `<td>${f(tl.clear_chance[i], "%")}</td>` : ""}<td>${f(tl.low[i])}/${f(tl.mid[i])}/${f(tl.high[i])}</td><td>${f(tl.precip[i], "%")}</td><td>${f(tl.temp[i], "°")}</td><td>${f(tl.dew[i], "°")}</td><td>${f(tl.wind[i])}</td><td>${tl.shoot[i] ? "✓" : ""}</td></tr>`);
+    rows.push(`<tr class="${tl.shoot[i] ? "ok" : ""}"><td>${lab}</td><td>${f(tl.sun[i], "°")}</td>${tl.target ? `<td>${f(tl.target[i], "°")}</td>` : ""}<td>${f(tl.moon[i], "°")}</td><td>${f(tl.cloud[i], "%")}</td>${tl.clear_chance ? `<td>${f(tl.clear_chance[i], "%")}</td>` : ""}<td>${f(tl.low[i])}/${f(tl.mid[i])}/${f(tl.high[i])}</td><td>${f(tl.precip[i], "%")}</td><td>${f(tl.temp[i], "°")}</td><td>${f(tl.dew[i], "°")}</td><td>${f(tl.wind[i])}</td>${tl.moon_mag ? `<td>${tl.moon_mag[i] ? `+${tl.moon_mag[i].toFixed(1)}` : "—"}</td>` : ""}<td>${tl.shoot[i] ? `${Math.round((tl.quality?.[i] ?? 1) * 100)}%` : ""}</td></tr>`);
   });
   const tcol = tl.target ? `<th>${esc(state.plan.target.short)}</th>` : "";
-  return `<table><thead><tr><th>Time</th><th>Sun</th>${tcol}<th>Moon</th><th>Cloud</th>${tl.clear_chance ? `<th title="Share of forecast runs within your cloud limit">Clear odds</th>` : ""}<th>L/M/H</th><th>Rain</th><th>Temp</th><th>Dew</th><th>Wind</th><th>Go</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+  return `<table><thead><tr><th>Time</th><th>Sun</th>${tcol}<th>Moon</th><th>Cloud</th>${tl.clear_chance ? `<th title="Share of forecast runs within your cloud limit">Clear odds</th>` : ""}<th>L/M/H</th><th>Rain</th><th>Temp</th><th>Dew</th><th>Wind</th>${tl.moon_mag ? `<th title="Sky brightening from moonlight at the target, magnitudes">Moon sky</th>` : ""}<th title="Value of this slot: 100% = target overhead on a clear moonless night">Value</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
 }
 
 // ---------- location search ----------
@@ -556,24 +557,138 @@ $("#geoBtn").addEventListener("click", () => {
 });
 
 // ---------- target ----------
+// Offline matches as you type (presets, planets, 13k-object catalog); Enter or the last row
+// looks anything else up online (coordinates, SIMBAD via CDS Sesame, JPL Horizons).
+const tInput = $("#targetInput");
+const tList = $("#targetList");
+let tResults = [];
+let tActive = -1;
+let tTimer;
+
 async function loadTargets() {
   const data = await api("/api/targets");
   state.targets = data.targets;
   state.defaults = data.defaults;
-  if (!state.settings) state.settings = { ...data.defaults };
-  const sel = $("#targetSelect");
-  const groups = {};
-  for (const t of data.targets) (groups[t.type] ||= []).push(t);
-  sel.innerHTML = Object.entries(groups)
-    .map(([type, ts]) => `<optgroup label="${esc(type === "Any" ? "Sky only" : type)}">${ts.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}</optgroup>`)
-    .join("");
-  if (!data.targets.some((t) => t.id === state.target)) state.target = "M31";
-  sel.value = state.target;
+  // Older saved settings used a moon-phase cutoff (moon_tol); it's now a moonlight limit in magnitudes.
+  const { moon_tol, ...kept } = state.settings || {};
+  state.settings = { ...data.defaults, ...kept };
+  tInput.value = state.targetLabel || data.targets.find((t) => t.id === state.target)?.name || state.target;
 }
-$("#targetSelect").addEventListener("change", (e) => {
-  state.target = e.target.value;
-  store.set("target", state.target);
+
+function setTarget(t) {
+  state.target = t.id;
+  state.targetLabel = t.name;
+  store.set("target", t.id);
+  store.set("targetLabel", t.name);
+  tInput.value = t.name;
+  closeTargets();
+  tInput.blur();
   runForecast();
+}
+
+async function searchTargets(q) {
+  try {
+    const data = await api(`/api/targets/search?q=${encodeURIComponent(q)}`);
+    if (tInput.value.trim() !== q && !(q === "" && tInput.value === "")) return;
+    tResults = data.results;
+    if (q.length >= 2) tResults.push({ resolve: q });
+    tActive = tResults.length ? 0 : -1;
+    drawTargets();
+  } catch (err) {
+    tList.innerHTML = `<li aria-disabled="true">${esc(err.message)}</li>`;
+    openTargets();
+  }
+}
+
+async function resolveTarget(q) {
+  tList.innerHTML = `<li aria-disabled="true"><span class="spinner" aria-hidden="true"></span> Looking up “${esc(q)}” in SIMBAD and JPL Horizons…</li>`;
+  openTargets();
+  try {
+    const res = await fetch(`/api/targets/resolve?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (data.target) return setTarget(data.target);
+    if (data.matches?.length) {
+      tResults = data.matches.map((m) => ({ resolve: m.query, label: m.label }));
+      tActive = 0;
+      drawTargets(data.error);
+      return;
+    }
+    tResults = [];
+    tList.innerHTML = `<li aria-disabled="true">${esc(data.error || "Not found.")}</li>`;
+  } catch (err) {
+    tList.innerHTML = `<li aria-disabled="true">${esc(err.message)}</li>`;
+  }
+}
+
+const targetDetail = (t) =>
+  [t.type, t.const, t.mag != null ? `mag ${t.mag}` : null, t.size ? `${t.size >= 60 ? `${(t.size / 60).toFixed(1)}°` : `${Math.round(t.size)}′`}` : null]
+    .filter(Boolean)
+    .join(" · ");
+
+function drawTargets(heading) {
+  const rows = tResults.map((r, i) => {
+    const sel = `id="topt${i}" role="option" aria-selected="${i === tActive}" data-i="${i}"`;
+    if (r.resolve && r.label) return `<li ${sel}>${esc(r.label)}<small>JPL Horizons</small></li>`;
+    if (r.resolve) return `<li ${sel} class="resolve">Search SIMBAD &amp; JPL for “${esc(r.resolve)}”<small>Any star, nebula, galaxy, comet or asteroid · or coordinates like 10h41m +41d16m</small></li>`;
+    return `<li ${sel}>${esc(r.name)}<small>${esc(targetDetail(r))}</small></li>`;
+  });
+  tList.innerHTML = (heading ? `<li aria-disabled="true" class="muted">${esc(heading)}</li>` : "") + (rows.join("") || `<li aria-disabled="true">No matches.</li>`);
+  tInput.setAttribute("aria-activedescendant", tActive >= 0 ? `topt${tActive}` : "");
+  openTargets();
+}
+function openTargets() {
+  tList.hidden = false;
+  tInput.setAttribute("aria-expanded", "true");
+}
+function closeTargets() {
+  tList.hidden = true;
+  tInput.setAttribute("aria-expanded", "false");
+}
+function pickTarget(r) {
+  if (r.resolve) resolveTarget(r.resolve);
+  else setTarget(r);
+}
+
+tInput.addEventListener("input", () => {
+  clearTimeout(tTimer);
+  const q = tInput.value.trim();
+  tTimer = setTimeout(() => searchTargets(q), 150);
+});
+tInput.addEventListener("focus", () => {
+  tInput.select();
+  searchTargets("");
+});
+tInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const q = tInput.value.trim();
+    if (!tList.hidden && tResults[tActive]) pickTarget(tResults[tActive]);
+    else if (q) resolveTarget(q);
+    return;
+  }
+  if (tList.hidden || !tResults.length) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    tActive = (tActive + (e.key === "ArrowDown" ? 1 : -1) + tResults.length) % tResults.length;
+    drawTargets();
+  } else if (e.key === "Escape") {
+    closeTargets();
+    tInput.value = state.targetLabel || state.target;
+  }
+});
+tInput.addEventListener("blur", () =>
+  setTimeout(() => {
+    if (tList.contains(document.activeElement)) return;
+    closeTargets();
+    if (!tInput.value.trim()) tInput.value = state.targetLabel || state.target;
+  }, 150)
+);
+tList.addEventListener("mousedown", (e) => {
+  const li = e.target.closest("li[data-i]");
+  if (li) {
+    e.preventDefault();
+    pickTarget(tResults[Number(li.dataset.i)]);
+  }
 });
 
 // ---------- saved locations ----------
@@ -622,7 +737,7 @@ async function toggleSave() {
       state.saved = (await api(`/api/locations/${existing.id}`, { method: "DELETE" })).locations;
       toast("Location removed");
     } else {
-      await saveLocation(loc.bortle ?? null);
+      await saveLocation(loc.sky_source === "your setting" ? loc.bortle : null);
       toast("Location saved");
     }
   } catch (err) {
@@ -634,12 +749,16 @@ async function toggleSave() {
 
 // ---------- limits drawer ----------
 const drawer = $("#drawer");
+const sliderText = (key, v) =>
+  key === "min_alt" ? `${v}°` : key === "moon_limit" ? `${Number(v).toFixed(1)} mag (${(10 ** (0.4 * v)).toFixed(1)}× brighter)` : `${v}%`;
 function syncSliders() {
   $$(".slider input").forEach((el) => {
     el.value = state.settings[el.dataset.key];
-    $(`#o_${el.dataset.key}`).textContent = `${el.value}${el.dataset.key === "min_alt" ? "°" : "%"}`;
+    $(`#o_${el.dataset.key}`).textContent = sliderText(el.dataset.key, el.value);
   });
-  $("#bortleSelect").value = state.plan?.location.bortle ?? "";
+  const atlas = state.plan?.location.atlas;
+  $("#bortleSelect").options[0].textContent = atlas ? `Automatic · Bortle ${atlas.bortle}, SQM ${atlas.sqm.toFixed(2)} (zone ${atlas.zone ?? "—"})` : "Automatic (satellite light-pollution atlas)";
+  $("#bortleSelect").value = state.plan && state.plan.location.sky_source === "your setting" ? state.plan.location.bortle : "";
   $("#bortleLoc").textContent = state.plan ? state.plan.location.label.split(",")[0] : "this location";
   $("#bortleSelect").disabled = !state.plan;
 }
@@ -653,7 +772,7 @@ function closeDrawer() {
 }
 $$(".slider input").forEach((el) =>
   el.addEventListener("input", () => {
-    $(`#o_${el.dataset.key}`).textContent = `${el.value}${el.dataset.key === "min_alt" ? "°" : "%"}`;
+    $(`#o_${el.dataset.key}`).textContent = sliderText(el.dataset.key, el.value);
   })
 );
 $("#settingsBtn").addEventListener("click", () => openDrawer());
@@ -670,10 +789,11 @@ $("#applyLimits").addEventListener("click", async () => {
   store.set("settings", next);
   const bortle = $("#bortleSelect").value;
   closeDrawer();
-  if (state.plan && String(state.plan.location.bortle ?? "") !== bortle) {
+  const manual = state.plan && state.plan.location.sky_source === "your setting" ? String(state.plan.location.bortle) : "";
+  if (state.plan && manual !== bortle) {
     try {
       await saveLocation(bortle ? Number(bortle) : null);
-      toast(bortle ? `Saved ${state.plan.location.label.split(",")[0]} as Bortle ${bortle}` : "Bortle cleared");
+      toast(bortle ? `Saved ${state.plan.location.label.split(",")[0]} as Bortle ${bortle}` : "Using the light-pollution atlas");
     } catch (err) {
       toast(err.message);
     }
@@ -704,8 +824,10 @@ $("#historyBtn").addEventListener("click", async () => {
         const t = state.targets.find((x) => x.name === r.target);
         if (t) {
           state.target = t.id;
-          $("#targetSelect").value = t.id;
+          state.targetLabel = t.name;
+          tInput.value = t.name;
           store.set("target", t.id);
+          store.set("targetLabel", t.name);
         }
         dlg.close();
         setLocation({ label: r.location, lat: r.lat, lon: r.lon, elevation: 0, timezone: null });
