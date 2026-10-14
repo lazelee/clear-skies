@@ -4,7 +4,8 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "astro_scheduler.db"
+DB_PATH = Path(__file__).resolve().parent.parent / "clear_skies.db"
+LEGACY_DB_PATH = DB_PATH.with_name("astro_scheduler.db")  # name before the Clear Skies rename
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS forecast_runs (
@@ -51,7 +52,18 @@ CREATE TABLE IF NOT EXISTS weather_cache (
 """
 
 
+def _migrate_legacy_db():
+    """Carry saved locations, history and caches over from the pre-rename database file."""
+    if DB_PATH.exists() or not LEGACY_DB_PATH.exists():
+        return
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        old = LEGACY_DB_PATH.with_name(LEGACY_DB_PATH.name + suffix)
+        if old.exists():
+            old.rename(DB_PATH.with_name(DB_PATH.name + suffix))
+
+
 def connect():
+    _migrate_legacy_db()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

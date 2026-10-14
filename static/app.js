@@ -4,10 +4,22 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const SVGNS = "http://www.w3.org/2000/svg";
 
+// Settings saved before the Clear Skies rename used the "anc." prefix; move them over once.
+try {
+  for (const k of Object.keys(localStorage)) {
+    if (!k.startsWith("anc.")) continue;
+    const next = `cs.${k.slice(4)}`;
+    if (localStorage.getItem(next) == null) localStorage.setItem(next, localStorage.getItem(k));
+    localStorage.removeItem(k);
+  }
+} catch {
+  /* private mode */
+}
+
 const store = {
   get(key, fallback) {
     try {
-      const v = localStorage.getItem(`anc.${key}`);
+      const v = localStorage.getItem(`cs.${key}`);
       return v == null ? fallback : JSON.parse(v);
     } catch {
       return fallback;
@@ -15,7 +27,7 @@ const store = {
   },
   set(key, value) {
     try {
-      localStorage.setItem(`anc.${key}`, JSON.stringify(value));
+      localStorage.setItem(`cs.${key}`, JSON.stringify(value));
     } catch {
       /* private mode */
     }
