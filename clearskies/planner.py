@@ -1,5 +1,6 @@
 """Turns weather + ephemeris into a ranked plan of shootable nights."""
 import time
+import warnings
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -106,6 +107,81 @@ def _weather_on_grid(wx, t):
     return out
 
 
+def _ensemble_on_grid(ens, t, max_cloud):
+    """
+    Per 10-minute slot, from every ensemble member: the chance that cloud stays within
+    `max_cloud` (each model weighted equally, so ECMWF's 51 members don't drown out the
+    rest), how many models and members cover the slot, and the 10th–90th percentile of
+    cloud cover across all members (the model spread).
+    """
+    if not ens:
+        return None
+    times = np.asarray(ens["time"], dtype=float)
+    mid = t + sky.STEP_SECONDS / 2
+    prob_sum, n_models, n_members = np.zeros(len(t)), np.zeros(len(t), int), np.zeros(len(t), int)
+    present, stacks = {}, []
+    for name, members in ens["models"].items():
+        grid = np.array([_interp_instant(times, _series(m), mid) for m in members])
+        have = ~np.isnan(grid)
+        count = have.sum(0)
+        clear = (have & (np.nan_to_num(grid, nan=101) <= max_cloud)).sum(0)
+        covered = count > 0
+        prob_sum[covered] += clear[covered] / count[covered]
+        n_models += covered
+        n_members += count
+        present[name] = covered
+        stacks.append(grid)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # slots no member reaches
+        lo, hi = np.nanpercentile(np.vstack(stacks), [10, 90], axis=0)
+        chance = np.where(n_models > 0, prob_sum / np.maximum(n_models, 1), np.nan)
+    return {"chance": chance, "models": n_models, "members": n_members, "present": present, "lo": lo, "hi": hi}
+
+
+def _confidence(ens, longest, sky_ok):
+    """
+    How likely the night's best window really is clear (or, with no window, how likely
+    the dark, moon- and target-OK hours clear up), from the ensemble chance.
+    """
+    if ens is None:
+        return None
+    ref = np.zeros(len(sky_ok), bool)
+    if longest:
+        ref[longest[0]:longest[1]] = True
+    else:
+        ref = sky_ok.copy()
+    ref &= ~np.isnan(ens["chance"])
+    if not ref.any():
+        return None
+    chance = float(ens["chance"][ref].mean())
+    models = [name for name, cov in ens["present"].items() if cov[ref].all()]
+    level = None
+    if longest:
+        # One model alone (only GEM reaches past ~day 11) can't show agreement.
+        level = "High" if chance >= 0.7 and len(models) >= 2 else "Medium" if chance >= 0.4 and len(models) >= 2 else "Low"
+    return {
+        "chance": int(round(chance * 100)),
+        "level": level,
+        "basis": "window" if longest else "dark",
+        "models": models,
+        "members": int(ens["members"][ref].min()),
+    }
+
+
+def _confidence_reason(c):
+    if not c:
+        return None
+    runs = f"{c['members']} forecast runs ({', '.join(c['models'])})" if c["models"] else "forecast runs"
+    if c["basis"] == "dark":
+        return f"{c['chance']}% of {runs} show clear dark hours — worth checking again." if c["chance"] >= 30 else None
+    lone = " Only one model reaches this far ahead." if len(c["models"]) < 2 else ""
+    if c["level"] == "High":
+        return f"High confidence: {c['chance']}% of {runs} keep the best window clear."
+    if c["level"] == "Medium":
+        return f"Models are split: {c['chance']}% of {runs} keep the best window clear.{lone}"
+    return f"Low confidence: only {c['chance']}% of {runs} keep the best window clear.{lone}"
+
+
 def _verdict(score):
     if score >= 75:
         return "Excellent"
@@ -157,6 +233,7 @@ def plan(location, target_id="none", settings=None, now=None):
     if target["ra"] is not None:
         tgt_alt = sky.target_alt(round(lat, 4), round(lon, 4), round(elevation), target["ra"], target["dec"], start, count)
     wxg = _weather_on_grid(wx, t)
+    ensg = _ensemble_on_grid(weather.fetch_ensemble(lat, lon), t, s["max_cloud"])
 
     bortle = db.bortle_for(lat, lon)
     nights = []
@@ -165,14 +242,21 @@ def plan(location, target_id="none", settings=None, now=None):
         b = int(np.searchsorted(t, noons[i + 1]))
         nights.append(_night(first + timedelta(days=i), t[a:b], sun_alt[a:b], moon_alt[a:b], illum[a:b], elong[a:b],
                              None if tgt_alt is None else tgt_alt[a:b], {k: v[a:b] for k, v in wxg.items()},
-                             s, target, tz, now))
+                             _slice(ensg, a, b), s, target, tz, now))
 
     # Before noon the list starts with last night; drop it once its darkness is over.
     if nights and nights[0]["reasons"] == ["This night is already over."]:
         nights = nights[1:]
 
+    # Best night = highest score weighted by how likely its window is to stay clear, so a
+    # confident 70 beats a 90 that only a third of the forecast runs agree with.
+    def trust(n):
+        if ensg is None:
+            return 1.0
+        return n["confidence"]["chance"] / 100 if n["confidence"] else 0.3
+
     ranked = [n for n in nights if n["usable_minutes"] > 0]
-    best = max(ranked, key=lambda n: (n["score"], n["usable_minutes"]), default=None)
+    best = max(ranked, key=lambda n: (n["score"] * trust(n), n["score"], n["usable_minutes"]), default=None)
     return {
         "location": {**location, "lat": lat, "lon": lon, "elevation": elevation, "timezone": str(tz.key), "bortle": bortle},
         "target": target,
@@ -180,13 +264,20 @@ def plan(location, target_id="none", settings=None, now=None):
         "generated_at": int(now),
         "weather_fetched_at": wx.get("fetched_at"),
         "nights": nights,
-        "best": best and {k: best[k] for k in ("date", "label", "best_window", "score", "verdict", "usable_hours")},
+        "best": best and {k: best[k] for k in ("date", "label", "best_window", "score", "verdict", "usable_hours", "confidence")},
+        "ensemble": ensg is not None,
         "good_nights": sum(1 for n in nights if n["score"] >= 50),
         "tip": _tip(target, bortle),
     }
 
 
-def _night(day, t, sun, moon, illum, elong, tgt, wx, s, target, tz, now):
+def _slice(ens, a, b):
+    if ens is None:
+        return None
+    return {k: ({n: c[a:b] for n, c in v.items()} if isinstance(v, dict) else v[a:b]) for k, v in ens.items()}
+
+
+def _night(day, t, sun, moon, illum, elong, tgt, wx, ens, s, target, tz, now):
     label = day.strftime("%a %b %-d")
     night = {"date": day.isoformat(), "label": label}
 
@@ -296,7 +387,12 @@ def _night(day, t, sun, moon, illum, elong, tgt, wx, s, target, tz, now):
     else:
         night["score"] = 0
     night["verdict"] = _verdict(night["score"])
+    night["confidence"] = _confidence(ens, longest, dark & future & moon_ok & tgt_ok)
     night["reasons"] = _reasons(night, dark, future, have_wx, cloud_ok, precip_ok, moon_ok, tgt_ok, cloud, precip, s, target, tz, t, moon)
+    why = _confidence_reason(night["confidence"])
+    if why:
+        after = next((i + 1 for i, r in enumerate(night["reasons"]) if " h shootable" in r), len(night["reasons"]))
+        night["reasons"].insert(after, why)
 
     # Chart timeline: an hour either side of sunset/sunrise.
     below = np.flatnonzero(sun < 0)
@@ -319,6 +415,9 @@ def _night(day, t, sun, moon, illum, elong, tgt, wx, s, target, tz, now):
         "wind": rnd(wx["wind_speed_10m"]),
         "shoot": [bool(v) for v in shoot[lo:hi]],
         "dark_level": dark_level,
+        "ens_lo": rnd(ens["lo"]) if ens else None,
+        "ens_hi": rnd(ens["hi"]) if ens else None,
+        "clear_chance": [None if np.isnan(v) else int(round(v * 100)) for v in ens["chance"][lo:hi]] if ens else None,
     }
     return night
 

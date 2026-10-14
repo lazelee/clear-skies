@@ -48,14 +48,16 @@ def main():
 
     bortle = plan["location"]["bortle"]
     print(f"\n{loc['label']}  ({loc['lat']:.3f}, {loc['lon']:.3f})  Bortle {bortle or '?'}  ·  target {plan['target']['name']}\n")
-    print(f"{'Night':12} {'Score':>5}  {'Verdict':9} {'Dark':12} {'Best window':12} {'Usable':>6}  {'Cloud':>5}  Moon")
+    print(f"{'Night':12} {'Score':>5}  {'Verdict':9} {'Dark':12} {'Best window':12} {'Usable':>6}  {'Cloud':>5}  {'Sure':>4}  Moon")
     for n in plan["nights"]:
         print(f"{n['label']:12} {n['score']:>5}  {n['verdict']:9} {(n['dark_start'] or '—') + '–' + (n['dark_end'] or '—'):12} "
               f"{n['best_window'] or '—':12} {n['usable_hours']:>5}h  {str(n['avg_cloud']) + '%' if n['avg_cloud'] is not None else '—':>5}  "
+              f"{str(n['confidence']['chance']) + '%' if n['confidence'] and n['confidence']['basis'] == 'window' else '—':>4}  "
               f"{n['moon']['phase']} {n['moon']['illumination']}%")
     if plan["best"]:
         b = plan["best"]
-        print(f"\nBest: {b['label']} {b['best_window']} ({b['usable_hours']} h, score {b['score']})")
+        sure = f", {b['confidence']['chance']}% of forecast runs agree" if b["confidence"] else ""
+        print(f"\nBest: {b['label']} {b['best_window']} ({b['usable_hours']} h, score {b['score']}{sure})")
     else:
         print("\nNo shootable nights in the forecast.")
     return 0

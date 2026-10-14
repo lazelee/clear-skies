@@ -36,6 +36,10 @@ const state = {
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const verdictClass = (v) => `v-${String(v).toLowerCase()}`;
+// Ensemble confidence: how many forecast runs agree the window stays clear.
+const confText = (c) => (c.basis === "window" ? `${c.chance}% likely` : `${c.chance}% may clear`);
+const confClass = (c) => `conf conf-${c.level ? c.level.toLowerCase() : "hint"}`;
+const showConf = (c) => c && (c.basis === "window" || c.chance >= 30);
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -137,9 +141,10 @@ function renderHero() {
         <span>Score <b>${best.score}</b> <span class="verdict ${verdictClass(best.verdict)}">${best.verdict}</span></span>
         <span>Moon <b>${best.moon.illumination}%</b> ${esc(best.moon.phase.toLowerCase())}</span>
         <span>Cloud <b>${best.avg_cloud ?? "—"}%</b></span>
+        ${best.confidence ? `<span>Clear in <b>${best.confidence.chance}%</b> of forecast runs <span class="${confClass(best.confidence)}">${best.confidence.level} confidence</span></span>` : ""}
         ${t}
       </p>
-      <p class="muted small" style="margin-top:6px">${plan.good_nights} good or better night${plan.good_nights === 1 ? "" : "s"} in the next ${plan.nights.length}.</p>`;
+      <p class="muted small" style="margin-top:6px">${plan.good_nights} good or better night${plan.good_nights === 1 ? "" : "s"} in the next ${plan.nights.length}.${plan.ensemble ? " Best night weighs score by how many forecast runs agree." : " Forecast confidence unavailable right now."}</p>`;
   } else {
     body = `
       <h2>No shootable nights in the forecast</h2>
@@ -164,7 +169,7 @@ function renderNights() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.role = "listitem";
-    btn.className = `night${n.score === 0 ? " is-poor" : ""}`;
+    btn.className = `night${n.score === 0 ? " is-poor" : ""}${n.confidence?.level === "Low" ? " is-unsure" : ""}`;
     btn.setAttribute("aria-current", String(n.date === state.selected));
     const [dow, ...rest] = n.label.split(" ");
     btn.innerHTML = `
@@ -174,11 +179,11 @@ function renderNights() {
       </div>
       <div class="night-mid">
         ${moonSvg(n.moon.elongation, south)}
-        <div class="night-stat">${n.usable_hours ? `<b>${n.usable_hours} h</b> clear` : "No window"}<br /><span class="verdict ${verdictClass(n.verdict)}">${n.verdict}</span></div>
+        <div class="night-stat">${n.usable_hours ? `<b>${n.usable_hours} h</b> clear` : "No window"}<br /><span class="verdict ${verdictClass(n.verdict)}">${n.verdict}</span>${showConf(n.confidence) ? `<br /><span class="${confClass(n.confidence)}" title="Share of ensemble forecast runs that keep this clear">${confText(n.confidence)}</span>` : ""}</div>
       </div>
       ${cloudBar(n)}
       <p class="night-why">${esc(n.reasons[0] || "")}</p>`;
-    btn.setAttribute("aria-label", `${n.label}: ${n.verdict}, score ${n.score}. ${n.reasons[0] || ""}`);
+    btn.setAttribute("aria-label", `${n.label}: ${n.verdict}, score ${n.score}${showConf(n.confidence) ? `, ${confText(n.confidence)}` : ""}. ${n.reasons[0] || ""}`);
     btn.addEventListener("click", () => {
       state.selected = n.date;
       $$(".night", list).forEach((el) => el.setAttribute("aria-current", String(el === btn)));
@@ -253,6 +258,7 @@ function renderDetail() {
     ["Darkness", n.dark_start ? `${n.dark_start}–${n.dark_end}` : "None", n.darkness === "astronomical" ? `${n.dark_hours} h astronomical` : n.darkness === "nautical" ? "nautical twilight only" : "never dark"],
     ["Moon", `${n.moon.illumination}% lit`, `${n.moon.phase} · ${moonUp}`],
     n.target ? [target.short, `${n.target.peak_alt}° peak`, `at ${n.target.peak_time} · ${n.target.hours_above_min} h above ${state.plan.settings.min_alt}°`] : null,
+    n.confidence ? ["Confidence", `${n.confidence.chance}%`, `${n.confidence.level ? `${n.confidence.level} · ` : "chance of clearing · "}${n.confidence.models.length} model${n.confidence.models.length === 1 ? "" : "s"}, ${n.confidence.members} runs`] : null,
     ["Cloud", n.avg_cloud != null ? `${n.avg_cloud}%` : "—", `low ${n.clouds.low ?? "—"} · mid ${n.clouds.mid ?? "—"} · high ${n.clouds.high ?? "—"}`],
     ["Conditions", n.min_temp != null ? `${n.min_temp}°C low` : "—", `wind ${n.avg_wind ?? "—"} km/h${n.dew_risk ? " · dew risk" : ""}`],
     ["Sun", n.sunset ? `↓ ${n.sunset}` : "—", n.sunrise ? `rises ${n.sunrise}` : ""],
@@ -276,6 +282,7 @@ function renderDetail() {
         ${n.target ? `<span><i style="background:var(--target)"></i>${esc(target.short)} altitude</span>` : ""}
         <span><i style="background:var(--moon)"></i>Moon altitude</span>
         <span><i style="background:var(--cloud)"></i>Cloud cover</span>
+        ${n.timeline.ens_lo ? `<span><i class="spread"></i>Model spread (10–90%)</span>` : ""}
         <span><i style="background:var(--rain)"></i>Rain chance</span>
       </div>
       <div class="chart-box">${chartSvg(n)}</div>
@@ -316,6 +323,21 @@ function chartSvg(n) {
   parts.push(`<text class="panel-label" x="${CH.l}" y="${CH.altTop - 8}">Altitude</text>`);
   parts.push(`<line class="grid" x1="${CH.l}" x2="${CH.w - CH.r}" y1="${CH.cloudTop + CH.cloudH}" y2="${CH.cloudTop + CH.cloudH}" />`);
   parts.push(`<text class="axis" x="${CH.l - 6}" y="${CH.cloudTop + 8}" text-anchor="end">100%</text>`);
+
+  // Ensemble spread: the band 80% of forecast runs fall inside, behind the main forecast.
+  if (tl.ens_lo && tl.ens_hi) {
+    let run = [];
+    const flush = () => {
+      if (run.length > 1) {
+        const top = run.map((i) => `${x(i).toFixed(1)},${cloudY(tl.ens_hi[i]).toFixed(1)}`);
+        const bot = run.slice().reverse().map((i) => `${x(i).toFixed(1)},${cloudY(tl.ens_lo[i]).toFixed(1)}`);
+        parts.push(`<polygon class="spread" points="${top.concat(bot).join(" ")}" />`);
+      }
+      run = [];
+    };
+    tl.ens_lo.forEach((lo, i) => (lo == null || tl.ens_hi[i] == null ? flush() : run.push(i)));
+    flush();
+  }
 
   // Cloud area and rain bars.
   const seg = [];
@@ -428,10 +450,10 @@ function hourTable(n) {
   tl.labels.forEach((lab, i) => {
     if (!lab.endsWith(":00") || tl.sun[i] > 0) return;
     const f = (v, u = "") => (v == null ? "—" : `${Math.round(v)}${u}`);
-    rows.push(`<tr class="${tl.shoot[i] ? "ok" : ""}"><td>${lab}</td><td>${f(tl.sun[i], "°")}</td>${tl.target ? `<td>${f(tl.target[i], "°")}</td>` : ""}<td>${f(tl.moon[i], "°")}</td><td>${f(tl.cloud[i], "%")}</td><td>${f(tl.low[i])}/${f(tl.mid[i])}/${f(tl.high[i])}</td><td>${f(tl.precip[i], "%")}</td><td>${f(tl.temp[i], "°")}</td><td>${f(tl.dew[i], "°")}</td><td>${f(tl.wind[i])}</td><td>${tl.shoot[i] ? "✓" : ""}</td></tr>`);
+    rows.push(`<tr class="${tl.shoot[i] ? "ok" : ""}"><td>${lab}</td><td>${f(tl.sun[i], "°")}</td>${tl.target ? `<td>${f(tl.target[i], "°")}</td>` : ""}<td>${f(tl.moon[i], "°")}</td><td>${f(tl.cloud[i], "%")}</td>${tl.clear_chance ? `<td>${f(tl.clear_chance[i], "%")}</td>` : ""}<td>${f(tl.low[i])}/${f(tl.mid[i])}/${f(tl.high[i])}</td><td>${f(tl.precip[i], "%")}</td><td>${f(tl.temp[i], "°")}</td><td>${f(tl.dew[i], "°")}</td><td>${f(tl.wind[i])}</td><td>${tl.shoot[i] ? "✓" : ""}</td></tr>`);
   });
   const tcol = tl.target ? `<th>${esc(state.plan.target.short)}</th>` : "";
-  return `<table><thead><tr><th>Time</th><th>Sun</th>${tcol}<th>Moon</th><th>Cloud</th><th>L/M/H</th><th>Rain</th><th>Temp</th><th>Dew</th><th>Wind</th><th>Go</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+  return `<table><thead><tr><th>Time</th><th>Sun</th>${tcol}<th>Moon</th><th>Cloud</th>${tl.clear_chance ? `<th title="Share of forecast runs within your cloud limit">Clear odds</th>` : ""}<th>L/M/H</th><th>Rain</th><th>Temp</th><th>Dew</th><th>Wind</th><th>Go</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
 }
 
 // ---------- location search ----------

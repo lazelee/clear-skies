@@ -43,3 +43,54 @@ def fetch(lat, lon):
     data["fetched_at"] = int(time.time())
     db.cache_put(key, data)
     return data
+
+
+ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
+# Independent ensembles, so their spread reflects real forecast uncertainty.
+# Reach (days): ECMWF ~11-15, GFS ~10, ICON ~7.5, GEM 16.
+ENSEMBLE_MODELS = {
+    "ecmwf_ifs025": "ECMWF",
+    "gfs025": "GFS",
+    "icon_seamless": "ICON",
+    "gem_global": "GEM",
+}
+ENSEMBLE_CACHE_SECONDS = 60 * 60
+
+
+def fetch_ensemble(lat, lon):
+    """
+    Hourly total cloud cover from every member of several ensembles, grouped by model:
+    {"time": [...], "models": {"ECMWF": [[member cloud %, ...], ...], ...}}.
+    Returns None if the ensemble service is unavailable; confidence is optional.
+    """
+    key = f"ens:{round(lat, 3)},{round(lon, 3)}"
+    cached = db.cache_get(key, ENSEMBLE_CACHE_SECONDS)
+    if cached:
+        return cached
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "cloud_cover",
+        "models": ",".join(ENSEMBLE_MODELS),
+        "timeformat": "unixtime",
+        "forecast_days": 16,
+    }
+    try:
+        res = requests.get(ENSEMBLE_URL, params=params, timeout=20)
+        res.raise_for_status()
+        hourly = res.json()["hourly"]
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+    models = {}
+    for series, values in hourly.items():
+        for api_name, label in ENSEMBLE_MODELS.items():
+            # Keys look like cloud_cover_ecmwf_ifs025_ensemble (control) and
+            # cloud_cover_member07_ecmwf_ifs025_ensemble; gfs025 comes back as ncep_gefs025.
+            if api_name in series or (api_name == "gfs025" and "gefs025" in series):
+                if any(v is not None for v in values):
+                    models.setdefault(label, []).append(values)
+    if not models:
+        return None
+    data = {"time": hourly["time"], "models": models, "fetched_at": int(time.time())}
+    db.cache_put(key, data)
+    return data

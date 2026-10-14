@@ -21,6 +21,19 @@ Each night then gets a **0–100 score** (weighted towards long unbroken runs, w
 a verdict (Excellent / Good / Marginal / Poor), the best window, moon rise/set, target peak and transit,
 dew risk, wind and temperature. All limits are adjustable in the app.
 
+## Forecast confidence
+A single forecast can't tell a sure thing from a coin flip, and cloud forecasts lose most of their skill
+after about 5 days. So every night is also checked against **143 ensemble forecast runs** from four
+independent models (ECMWF 51, GFS 31, ICON 40, GEM 21). For each slot, Clear Skies counts how many runs keep cloud within
+your limit (each model weighted equally) and reports:
+
+- **Chance clear** for the best window, with a High / Medium / Low confidence level
+- **Model spread** on the cloud chart (the 10–90% band of all runs) and a "Clear odds" column in the table
+- On nights with no window, a hint when a fair share of runs still see clear dark hours
+
+The headline **best night** is chosen by score × chance clear, so a confident 70 beats a doubtful 90.
+Beyond ~11 days only GEM reaches, so those nights are never marked High confidence.
+
 ## Run the dashboard
 ```bash
 pip install -r requirements.txt
@@ -59,6 +72,6 @@ static/           dashboard (vanilla JS, no build step)
 ```
 
 ## Data sources
-- [Open-Meteo](https://open-meteo.com): geocoding and 16-day hourly weather, no API key needed
+- [Open-Meteo](https://open-meteo.com): geocoding, 16-day hourly weather and the ensemble API, no API key needed
 - [Astropy](https://www.astropy.org): sun, moon and target positions, computed on your machine
 - [Light Pollution Map](https://lightpollutionmap.app): look up the Bortle class to save with a location

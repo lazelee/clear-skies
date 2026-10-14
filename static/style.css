@@ -198,6 +198,14 @@ main { display: grid; gap: 18px; margin-top: 18px; }
 .verdict.v-good { color: var(--good); }
 .verdict.v-marginal { color: var(--marginal); }
 .verdict.v-poor { color: var(--muted); }
+.conf { font: 600 11px var(--mono); letter-spacing: 0.04em; }
+.conf-high { color: var(--excellent); }
+.conf-medium { color: var(--marginal); }
+.conf-low, .conf-hint { color: var(--muted); }
+.night.is-unsure { opacity: 0.85; }
+.night.is-unsure .ring { opacity: 0.6; }
+polygon.spread { fill: var(--accent); opacity: 0.24; }
+.chart-key i.spread { background: var(--accent); opacity: 0.35; }
 
 /* ---------- detail ---------- */
 .detail { padding: 20px; display: grid; gap: 18px; }
