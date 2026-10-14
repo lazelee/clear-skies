@@ -50,7 +50,7 @@ def index():
 
 @app.get("/api/search")
 def search():
-    return jsonify(results=geo.search(request.args.get("q", "")))
+    return jsonify(results=geo.search(request.args.get("q", ""), fast=request.args.get("fast") == "1"))
 
 
 @app.get("/api/targets")

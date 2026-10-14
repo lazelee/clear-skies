@@ -38,8 +38,9 @@ on Windows) and run `python app.py`.
 No git? Use **Code → Download ZIP** on GitHub, unzip it and start from `cd clear-skies`.
 
 ### Using the dashboard
-1. **Location**: type a city (add the region or country if the name is common, e.g. "Gravenhurst, Canada"),
-   or press **My location**. Your sky brightness is looked up automatically.
+1. **Location**: type any city, town, village or suburb, in any language ("Scarborough, ON", "Springfield, IL",
+   "São Paulo", "東京"), or press **My location**. Add a region or country after a comma to pick between
+   same-name places. Your sky brightness is looked up automatically.
 2. **Target**: start typing (`M31`, `Orion`, `Jupiter`, `Sh2-155`, `Ceres`…) and pick a match. For anything
    not in the built-in list, press **Enter** to look it up online. Choose *No target* for wide-field and Milky Way shots.
 3. Read the **Best night** at the top, then click any night card for its timeline chart, sky-quality
@@ -70,8 +71,11 @@ fast lookups). Delete either to start fresh. Settings in the dashboard are kept 
 - **`python` not found / wrong version**: use `python3` (macOS/Linux) or `py` (Windows), and check it's 3.9+.
 - **Port 5050 already in use**: run on another port: `PORT=8080 python app.py` (macOS/Linux) or
   `$env:PORT=8080; python app.py` (Windows PowerShell), then open http://localhost:8080.
-- **Wrong town picked**: add the region or country ("Gravenhurst, Canada", or `--country Canada`). Several
-  places share most names. Use the English place name.
+- **Wrong town picked**: add the region or country after a comma ("Scarborough, ON", "Paris, TX",
+  "Gravenhurst, Canada", or `--country Canada`). Many places share a name. State, province and country
+  codes work (ON, IL, NSW, US, UK), as do common country names (DR Congo, Ivory Coast, Burma).
+- **Place not found**: try the local or English spelling (El Aaiún is "Laayoune"), or a nearby town;
+  any spot within a few kilometres gives the same forecast.
 - **"Weather forecast unavailable" or lookups failing**: you're offline, or a free service is briefly down.
   Built-in targets and planets still work offline; the forecast itself needs Open-Meteo.
 - **First run is slow for a new place**: it downloads 15 years of weather history for the outlook (a few
@@ -204,6 +208,8 @@ tests/              physics and worldwide planner tests
 ```
 
 ## Data sources
+- [Photon](https://photon.komoot.io) (komoot) on [OpenStreetMap](https://www.openstreetmap.org/copyright) data, © OpenStreetMap contributors (ODbL): place search for suburbs, merged towns and any script
+- [GeoNames](https://www.geonames.org) country names (CC-BY 4.0)
 - [Open-Meteo](https://open-meteo.com): geocoding, 16-day hourly weather, ensemble forecasts, CAMS aerosol forecasts and the ERA5 historical archive (no API key)
 - [Astropy](https://www.astropy.org): sun, moon, planet and target positions, computed on your machine
 - [JPL Horizons](https://ssd.jpl.nasa.gov/horizons/): comet and asteroid ephemerides

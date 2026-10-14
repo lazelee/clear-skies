@@ -541,13 +541,25 @@ input.addEventListener("input", () => {
   const q = input.value.trim();
   if (q.length < 2) return closeList();
   searchTimer = setTimeout(async () => {
-    try {
-      const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
+    // Two passes: the population-ranked geocoder answers in ~0.5 s; OpenStreetMap (suburbs, merged
+    // towns, any script) takes longer, so its results replace the list when they arrive.
+    const show = (data, final) => {
       if (input.value.trim() !== q) return;
+      const keep = results[active] && data.results.findIndex((r) => r.label === results[active].label);
       results = data.results;
-      active = results.length ? 0 : -1;
-      drawList(q);
+      active = keep >= 0 ? keep : results.length ? 0 : -1;
+      if (results.length || final) return drawList(q, !final);
+      // Nothing quick for this text (e.g. "Scarborough, ON"): don't leave the last query's list up.
+      list.innerHTML = `<li aria-disabled="true" class="muted"><span class="spinner" aria-hidden="true"></span> Searching OpenStreetMap…</li>`;
+      openList();
+    };
+    try {
+      const fast = api(`/api/search?fast=1&q=${encodeURIComponent(q)}`).then((d) => show(d, false), () => {});
+      const full = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      await fast;
+      show(full, true);
     } catch (err) {
+      if (input.value.trim() !== q) return;
       results = [];
       list.innerHTML = `<li aria-disabled="true">${esc(err.message)}</li>`;
       openList();
@@ -570,13 +582,14 @@ input.addEventListener("keydown", (e) => {
 input.addEventListener("blur", () => setTimeout(closeList, 150));
 input.addEventListener("focus", () => input.select());
 
-function drawList(q) {
+function drawList(q, more) {
   if (!results.length) {
-    list.innerHTML = `<li aria-disabled="true">No places match “${esc(q || input.value)}”.</li>`;
+    list.innerHTML = `<li aria-disabled="true">No places match “${esc(q || input.value)}”. Try adding the country, e.g. “Scarborough, Canada”.</li>`;
   } else {
-    list.innerHTML = results
-      .map((r, i) => `<li id="opt${i}" role="option" aria-selected="${i === active}" data-i="${i}">${esc(r.name)}<small>${esc(r.label)} · ${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}</small></li>`)
-      .join("");
+    list.innerHTML =
+      results
+        .map((r, i) => `<li id="opt${i}" role="option" aria-selected="${i === active}" data-i="${i}">${esc(r.name)}<small>${esc(r.label)} · ${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}</small></li>`)
+        .join("") + (more ? `<li aria-disabled="true" class="muted"><span class="spinner" aria-hidden="true"></span> Searching OpenStreetMap too…</li>` : "");
     input.setAttribute("aria-activedescendant", active >= 0 ? `opt${active}` : "");
   }
   openList();
