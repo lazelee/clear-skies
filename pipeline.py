@@ -1,15 +1,11 @@
-"""Headless run: print the plan and optionally email it (good for cron).
+"""Command-line run: print the plan for a place and target.
 
-    python pipeline.py --city Toronto --country Canada --target M31 --email
+    python pipeline.py --city Toronto --country Canada --target M31
 """
 import argparse
 import sys
 
-from dotenv import load_dotenv
-
-from clearskies import db, emailer, geo, planner, targets
-
-load_dotenv()
+from clearskies import db, geo, planner, targets
 
 
 def main():
@@ -21,7 +17,6 @@ def main():
     ap.add_argument("--max-precip", type=int, default=planner.DEFAULTS["max_precip"])
     ap.add_argument("--min-alt", type=int, default=planner.DEFAULTS["min_alt"])
     ap.add_argument("--moon-tol", type=int, default=planner.DEFAULTS["moon_tol"])
-    ap.add_argument("--email", action="store_true", help="email the plan (needs SENDER_EMAIL/APP_PASSWORD in .env)")
     ap.add_argument("--list-targets", action="store_true")
     a = ap.parse_args()
 
@@ -63,13 +58,6 @@ def main():
         print(f"\nBest: {b['label']} {b['best_window']} ({b['usable_hours']} h, score {b['score']})")
     else:
         print("\nNo shootable nights in the forecast.")
-
-    if a.email:
-        try:
-            print(f"Emailed {emailer.send(plan)}")
-        except emailer.EmailNotConfigured as err:
-            print(err, file=sys.stderr)
-            return 2
     return 0
 
 

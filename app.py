@@ -3,12 +3,10 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from clearskies import db, emailer, geo, planner, targets
+from clearskies import db, geo, planner, targets
 
-load_dotenv()
 db.init()
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
@@ -63,7 +61,6 @@ def target_list():
 def forecast():
     plan = _plan(request.args)
     plan["run_id"] = db.log_run(plan)
-    plan["email_ready"] = emailer.configured()
     return jsonify(plan)
 
 
@@ -99,18 +96,6 @@ def ics():
     ])
     name = f"clear-skies-{night['date']}-{target['id']}.ics"
     return Response(body, mimetype="text/calendar", headers={"Content-Disposition": f'attachment; filename="{name}"'})
-
-
-@app.post("/api/email")
-def email():
-    args = request.get_json(silent=True) or {}
-    try:
-        to = emailer.send(_plan(args))
-    except emailer.EmailNotConfigured as err:
-        return jsonify(error=str(err)), 400
-    except Exception as err:  # SMTP/auth failures: report, don't crash
-        return jsonify(error=f"Email failed: {err}"), 502
-    return jsonify(ok=True, to=to)
 
 
 @app.get("/api/locations")

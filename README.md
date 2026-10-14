@@ -37,21 +37,17 @@ Open **http://localhost:5050**.
 
 <p align="center"><img src="assets/ui_night_detail.png" width="760" alt="Night detail with timeline chart"></p>
 
-## Command line and email
-The original email workflow still works headless (e.g. from cron):
+## Command line
+The same forecast as a table in the terminal:
 ```bash
-python pipeline.py --city Gravenhurst --country Canada --target M31 --email
+python pipeline.py --city Gravenhurst --country Canada --target M31
 python pipeline.py --list-targets
 ```
-Email is optional. To enable it (CLI and the **Email forecast** button), copy `.env.example` to `.env`
-and add a Gmail address plus an [App Password](https://myaccount.google.com/apppasswords).
-
-<p align="center"><img src="assets/email_preview.png" width="520" alt="Email table preview"></p>
 
 ## Project layout
 ```
 app.py            Flask server + JSON API (localhost:5050)
-pipeline.py       command-line run, optional email
+pipeline.py       command-line run
 clearskies/
   planner.py      night windows, scoring, reasons
   sky.py          sun/moon/target positions (Astropy, offline)
@@ -59,7 +55,6 @@ clearskies/
   geo.py          place search
   targets.py      target catalog
   db.py           SQLite: runs, nightly results, saved locations
-  emailer.py      HTML email
 static/           dashboard (vanilla JS, no build step)
 ```
 

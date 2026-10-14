@@ -258,7 +258,6 @@ function renderDetail() {
     ["Sun", n.sunset ? `↓ ${n.sunset}` : "—", n.sunrise ? `rises ${n.sunrise}` : ""],
   ].filter(Boolean);
   const icsHref = hasWindow ? `/api/ics?${queryParams({ date: n.date })}` : null;
-  const emailReady = state.plan.email_ready;
   box.innerHTML = `
     <div class="detail-head">
       <div>
@@ -267,7 +266,6 @@ function renderDetail() {
       </div>
       <div class="detail-actions">
         ${icsHref ? `<a class="btn ghost" href="${icsHref}" download>Add to calendar</a>` : ""}
-        <button id="emailBtn" class="btn ghost" type="button" ${emailReady ? "" : 'disabled title="Add SENDER_EMAIL and APP_PASSWORD to .env to enable email"'}>Email forecast</button>
       </div>
     </div>
     <ul class="reasons">${n.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
@@ -283,7 +281,6 @@ function renderDetail() {
       <div class="chart-box">${chartSvg(n)}</div>
     </div>
     <details class="hours"><summary>Hour-by-hour table</summary><div class="table-box">${hourTable(n)}</div></details>`;
-  $("#emailBtn").addEventListener("click", sendEmail);
   wireChart(n);
 }
 
@@ -435,25 +432,6 @@ function hourTable(n) {
   });
   const tcol = tl.target ? `<th>${esc(state.plan.target.short)}</th>` : "";
   return `<table><thead><tr><th>Time</th><th>Sun</th>${tcol}<th>Moon</th><th>Cloud</th><th>L/M/H</th><th>Rain</th><th>Temp</th><th>Dew</th><th>Wind</th><th>Go</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
-}
-
-async function sendEmail() {
-  const btn = $("#emailBtn");
-  btn.disabled = true;
-  btn.textContent = "Sending…";
-  try {
-    const r = await api("/api/email", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(Object.fromEntries(queryParams())),
-    });
-    toast(`Forecast emailed to ${r.to}`);
-  } catch (err) {
-    toast(err.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Email forecast";
-  }
 }
 
 // ---------- location search ----------
