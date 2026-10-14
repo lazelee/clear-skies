@@ -1,4 +1,4 @@
-"""Local web UI for Astro Night Checker: python app.py → http://localhost:5050"""
+"""Local web UI for Clear Skies: python app.py → http://localhost:5050"""
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from astro import db, emailer, geo, planner, targets
+from clearskies import db, emailer, geo, planner, targets
 
 load_dotenv()
 db.init()
@@ -88,8 +88,8 @@ def ics():
     what = target["name"] if target["id"] != "none" else "Astrophotography"
     desc = " ".join(night["reasons"]) + f" Moon {night['moon']['illumination']}% ({night['moon']['phase']})."
     body = "\r\n".join([
-        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//astro-night-checker//EN", "BEGIN:VEVENT",
-        f"UID:{night['date']}-{target['id']}-{plan['location']['lat']:.3f}{plan['location']['lon']:.3f}@astro-night-checker",
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//clear-skies//EN", "BEGIN:VEVENT",
+        f"UID:{night['date']}-{target['id']}-{plan['location']['lat']:.3f}{plan['location']['lon']:.3f}@clear-skies",
         f"DTSTAMP:{fmt(datetime.now(tz))}", f"DTSTART:{fmt(start)}", f"DTEND:{fmt(end)}",
         f"SUMMARY:{what} — {night['verdict']} night ({night['score']})",
         f"LOCATION:{plan['location']['label']}",
@@ -97,7 +97,7 @@ def ics():
         "BEGIN:VALARM", "TRIGGER:-PT60M", "ACTION:DISPLAY", "DESCRIPTION:Set up the rig", "END:VALARM",
         "END:VEVENT", "END:VCALENDAR", "",
     ])
-    name = f"astro-{night['date']}-{target['id']}.ics"
+    name = f"clear-skies-{night['date']}-{target['id']}.ics"
     return Response(body, mimetype="text/calendar", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
@@ -143,5 +143,5 @@ def history():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5050"))
-    print(f"\n  Astro Night Checker → http://localhost:{port}\n")
+    print(f"\n  Clear Skies → http://localhost:{port}\n")
     app.run(host="127.0.0.1", port=port, debug=False)

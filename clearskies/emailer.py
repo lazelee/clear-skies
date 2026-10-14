@@ -38,7 +38,7 @@ def render(plan):
         rows.append("<tr>" + "".join(f"<td style='padding:8px;border-bottom:1px solid #eee'>{c}</td>" for c in cells) + "</tr>")
     head = ["Night", "Score", "Dark", "Best window", "Usable", "Cloud", "Rain", "Moon", target["short"] if target["id"] != "none" else "Target"]
     return f"""<html><body style="font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1d1f24">
-<h2 style="margin:0 0 4px">Astro nights: {escape(loc['label'])}{bortle}</h2>
+<h2 style="margin:0 0 4px">Clear Skies: {escape(loc['label'])}{bortle}</h2>
 <p style="margin:0 0 16px;color:#666">Target: {escape(target['name'])} · limits: cloud ≤ {plan['settings']['max_cloud']}%,
 rain ≤ {plan['settings']['max_precip']}%, altitude ≥ {plan['settings']['min_alt']}°, moon ≤ {plan['settings']['moon_tol']}% lit when up</p>
 <table cellspacing="0" style="border-collapse:collapse;font-size:14px">
@@ -54,7 +54,7 @@ def send(plan, to=None):
         raise EmailNotConfigured("Email isn't set up. Add SENDER_EMAIL and APP_PASSWORD to .env (see .env.example).")
     good = sum(1 for n in plan["nights"] if n["usable_minutes"])
     msg = EmailMessage()
-    msg["Subject"] = f"Astro Alert: {good} shootable night{'s' if good != 1 else ''} · {plan['location']['label']}"
+    msg["Subject"] = f"Clear Skies: {good} shootable night{'s' if good != 1 else ''} · {plan['location']['label']}"
     msg["From"] = sender
     msg["To"] = to or os.getenv("EMAIL_TO") or sender
     msg.set_content("Please enable HTML to view this message.")

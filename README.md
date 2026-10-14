@@ -1,10 +1,10 @@
-# Astro Night Checker
+# Clear Skies
 
 A 16-day astrophotography planner with a local web dashboard. For any place on Earth it finds the
 **dark, clear, moon-free hours** when your target is high enough to shoot, ranks every night, and
 explains in plain English what's stopping the bad ones.
 
-<p align="center"><img src="assets/ui_overview.png" width="760" alt="Astro Night Checker dashboard"></p>
+<p align="center"><img src="assets/ui_overview.png" width="760" alt="Clear Skies dashboard"></p>
 
 ## What it checks
 Every 10 minutes of every night, a slot counts as **shootable** only when all of these hold:
@@ -52,7 +52,7 @@ and add a Gmail address plus an [App Password](https://myaccount.google.com/appp
 ```
 app.py            Flask server + JSON API (localhost:5050)
 pipeline.py       command-line run, optional email
-astro/
+clearskies/
   planner.py      night windows, scoring, reasons
   sky.py          sun/moon/target positions (Astropy, offline)
   weather.py      Open-Meteo forecast (cached 30 min)

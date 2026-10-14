@@ -7,7 +7,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from astro import db, emailer, geo, planner, targets
+from clearskies import db, emailer, geo, planner, targets
 
 load_dotenv()
 
