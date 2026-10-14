@@ -37,7 +37,13 @@ def sun_moon(lat, lon, elevation, start_unix, count):
     # Signed sun-moon ecliptic longitude difference: 0 = new, 180 = full, <180 waxing.
     ecl = GeocentricTrueEcliptic(equinox=t)
     elong = (moon.transform_to(ecl).lon.deg - sun.transform_to(ecl).lon.deg) % 360
-    illum = (1 - np.cos(np.radians(elong))) / 2
+    # Illuminated fraction k = (1 + cos i) / 2 from the true phase angle i (Sun–Moon–Earth),
+    # in 3D: the longitude difference alone ignores the moon's ±5° ecliptic latitude.
+    s = get_body("sun", t).cartesian.xyz.to_value(u.km)
+    m = get_body("moon", t).cartesian.xyz.to_value(u.km)
+    to_sun, to_earth = s - m, -m
+    cos_i = (to_sun * to_earth).sum(0) / (np.linalg.norm(to_sun, axis=0) * np.linalg.norm(to_earth, axis=0))
+    illum = (1 + cos_i) / 2
     return sun_alt, moon_alt, illum, elong
 
 

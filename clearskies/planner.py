@@ -12,6 +12,9 @@ LIMITS = {"max_cloud": (0, 100), "max_precip": (0, 100), "min_alt": (0, 80), "mo
 ASTRO_DARK = -18.0
 NAUTICAL_DARK = -12.0
 SUNSET_ALT = -0.833
+# Topocentric altitude of the moon's centre when its upper limb is on the horizon:
+# 34' refraction + ~15.5' semi-diameter (parallax is already in astropy's topocentric position).
+MOON_HORIZON = -0.833
 STEP_MIN = sky.STEP_SECONDS // 60
 NIGHTS = 15
 
@@ -60,20 +63,45 @@ def _blocks(mask):
     return runs
 
 
+def _series(raw):
+    return np.array([np.nan if v is None else v for v in raw or []], dtype=float)
+
+
+def _interp_instant(times, arr, x):
+    """Linear interpolation of values valid at `times`; NaN outside the series or next to a gap."""
+    out = np.full(len(x), np.nan)
+    if len(arr) < 2:
+        return out
+    i = np.searchsorted(times, x, side="right") - 1
+    inside = (i >= 0) & (i < len(arr) - 1)
+    i = np.clip(i, 0, len(arr) - 2)
+    frac = (x - times[i]) / (times[i + 1] - times[i])
+    out[inside] = (arr[i] * (1 - frac) + arr[i + 1] * frac)[inside]
+    out[x == times[-1]] = arr[-1]
+    return out
+
+
 def _weather_on_grid(wx, t):
-    """Sample hourly weather onto the 10-minute grid (value of the hour the slot falls in)."""
+    """
+    Put hourly weather on the 10-minute grid, respecting what each timestamp means
+    (Open-Meteo): most variables are instantaneous at the hour, so interpolate between
+    hours; precipitation probability covers the *preceding* hour, so a slot takes the
+    value stamped at the end of the hour it falls in.
+    """
     hourly = wx["hourly"]
     times = np.asarray(hourly["time"], dtype=float)
-    idx = np.searchsorted(times, t, side="right") - 1
-    valid = (idx >= 0) & (t - times[np.clip(idx, 0, None)] < 3600)
+    mid = t + sky.STEP_SECONDS / 2
     out = {}
     for key in weather.HOURLY:
-        raw = hourly.get(key) or []
-        arr = np.array([np.nan if v is None else v for v in raw], dtype=float)
-        vals = np.full(len(t), np.nan)
-        if len(arr):
-            safe = np.clip(idx, 0, len(arr) - 1)
-            vals = np.where(valid, arr[safe], np.nan)
+        arr = _series(hourly.get(key))
+        if key in weather.PRECEDING_HOUR:
+            vals = np.full(len(t), np.nan)
+            if len(arr):
+                j = np.clip(np.searchsorted(times, mid, side="left"), 0, len(arr) - 1)
+                ok = (times[j] >= mid) & (times[j] - mid < 3600)
+                vals[ok] = arr[j][ok]
+        else:
+            vals = _interp_instant(times, arr, mid)
         out[key] = vals
     return out
 
@@ -186,9 +214,9 @@ def _night(day, t, sun, moon, illum, elong, tgt, wx, s, target, tz, now):
     # Only moon events between sunset and sunrise matter for the night.
     night_span = sun < 0
     m_rises, m_sets = (
-        [x for x in ev if night_span[min(int(np.searchsorted(t, x)), len(t) - 1)]] for ev in _crossings(moon, 0, t)
+        [x for x in ev if night_span[min(int(np.searchsorted(t, x)), len(t) - 1)]] for ev in _crossings(moon, MOON_HORIZON, t)
     )
-    moon_up_dark = float((moon[dark] > 0).mean()) if dark.any() else 0.0
+    moon_up_dark = float((moon[dark] > MOON_HORIZON).mean()) if dark.any() else 0.0
     night["moon"] = {
         "phase": sky.phase_name(elong[mid]),
         "illumination": int(round(illum[mid] * 100)),
@@ -205,7 +233,7 @@ def _night(day, t, sun, moon, illum, elong, tgt, wx, s, target, tz, now):
     cloud_ok = have_wx & (np.nan_to_num(cloud, nan=101) <= s["max_cloud"])
     # A missing precipitation value alone (common at the far end of the forecast) doesn't veto a slot.
     precip_ok = np.isnan(precip) | (precip <= s["max_precip"])
-    moon_ok = (moon <= 0) | (illum * 100 <= s["moon_tol"])
+    moon_ok = (moon <= MOON_HORIZON) | (illum * 100 <= s["moon_tol"])
     tgt_ok = np.ones(len(t), bool) if tgt is None else tgt >= s["min_alt"]
     shoot = dark & future & cloud_ok & precip_ok & moon_ok & tgt_ok
 
@@ -259,7 +287,7 @@ def _night(day, t, sun, moon, illum, elong, tgt, wx, s, target, tz, now):
         length = min(1.0, longest_h / 4)
         coverage = usable / max(len(dark_idx) * STEP_MIN, 1)
         clarity = 1 - (night["avg_cloud"] or 0) / max(s["max_cloud"], 1) * 0.6
-        moon_pen = 1 - 0.35 * float(((moon > 0) & shoot).sum() / max(shoot.sum(), 1)) * float(illum[mid])
+        moon_pen = 1 - 0.35 * float(((moon > MOON_HORIZON) & shoot).sum() / max(shoot.sum(), 1)) * float(illum[mid])
         penalty = (0.9 if night["dew_risk"] else 1.0) * (0.85 if (night["avg_wind"] or 0) > 25 else 1.0)
         if darkness == "nautical":
             penalty *= 0.6
@@ -336,7 +364,7 @@ def _reasons(n, dark, future, have_wx, cloud_ok, precip_ok, moon_ok, tgt_ok, clo
         elif key == "precip":
             out.append(f"Rain risk up to {int(np.nanmax(precip[base]))}% {_span(base & ~precip_ok, t, tz)}.")
         elif key == "moon":
-            out.append(f"Moon {n['moon']['illumination']}% lit and up {_span(usable_dark & (moon > 0), t, tz)}.")
+            out.append(f"Moon {n['moon']['illumination']}% lit and up {_span(usable_dark & (moon > MOON_HORIZON), t, tz)}.")
         elif key == "target" and tname:
             if n["target"] and n["target"]["peak_alt"] < s["min_alt"]:
                 out.append(f"{tname} peaks at only {n['target']['peak_alt']:g}° while dark (min {s['min_alt']}°).")

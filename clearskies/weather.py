@@ -12,6 +12,8 @@ HOURLY = [
     "precipitation_probability", "temperature_2m", "dew_point_2m",
     "relative_humidity_2m", "wind_speed_10m", "visibility",
 ]
+# Hourly values that cover the hour *before* their timestamp; everything else is instantaneous.
+PRECEDING_HOUR = {"precipitation_probability"}
 CACHE_SECONDS = 30 * 60
 
 
