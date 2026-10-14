@@ -7,7 +7,80 @@ and explains in plain English what's costing you.
 
 <p align="center"><img src="assets/clear-skies-dashboard.png" width="760" alt="Clear Skies dashboard"></p>
 
+## Quick start
+You need **Python 3.9 or newer** and an internet connection (for weather and lookups). Check with
+`python3 --version`; on Windows use `py --version`, and get Python from [python.org](https://www.python.org/downloads/) if needed.
+
+**macOS / Linux**
+```bash
+git clone https://github.com/lazelee/clear-skies.git
+cd clear-skies
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+```
+
+**Windows** (PowerShell)
+```powershell
+git clone https://github.com/lazelee/clear-skies.git
+cd clear-skies
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python app.py
+```
+
+Then open **http://localhost:5050** in your browser. Stop the server with **Ctrl+C**. Next time, just
+`cd clear-skies`, activate the environment again (`source .venv/bin/activate`, or `.venv\Scripts\Activate.ps1`
+on Windows) and run `python app.py`.
+
+No git? Use **Code → Download ZIP** on GitHub, unzip it and start from `cd clear-skies`.
+
+### Using the dashboard
+1. **Location**: type a city (add the region or country if the name is common, e.g. "Gravenhurst, Canada"),
+   or press **My location**. Your sky brightness is looked up automatically.
+2. **Target**: start typing (`M31`, `Orion`, `Jupiter`, `Sh2-155`, `Ceres`…) and pick a match. For anything
+   not in the built-in list, press **Enter** to look it up online. Choose *No target* for wide-field and Milky Way shots.
+3. Read the **Best night** at the top, then click any night card for its timeline chart, sky-quality
+   details and an hour-by-hour table. The **30-day outlook** loads underneath.
+4. **Limits** sets your cloud, rain, altitude and moonlight limits, and lets you override the sky brightness
+   if you've measured it. **★ Save location** keeps a place for one-click access.
+
+Other buttons: **Add to calendar** (an `.ics` event for the best window, with a 1-hour setup reminder),
+**Night vision** (an all-red UI that keeps your eyes dark-adapted at the telescope) and **History** (past forecasts).
+
+### Command line
+The same forecast as a table in the terminal (activate the environment first, as above):
+```bash
+python pipeline.py --city Gravenhurst --country Canada --target M31
+python pipeline.py --city Sydney --country Australia --target "Large Magellanic Cloud"
+python pipeline.py --city Denver --country US --target Jupiter
+python pipeline.py --city Santiago --country Chile --target "Tarantula Nebula" --moon-limit 3   # narrowband: tolerate more moon
+python pipeline.py --city Gravenhurst --country Canada --target M31 --outlook       # adds nights 16–30
+python pipeline.py --help                                                          # every option and its default
+```
+
+### What gets saved on your computer
+Everything stays in the `clear-skies` folder: `clear_skies.db` (saved locations, history and cached
+forecasts) and `data/` (the light-pollution map, a one-time 2.8 MB download that's stored as ~77 MB for
+fast lookups). Delete either to start fresh. Settings in the dashboard are kept by your browser.
+
+### Troubleshooting
+- **`python` not found / wrong version**: use `python3` (macOS/Linux) or `py` (Windows), and check it's 3.9+.
+- **Port 5050 already in use**: run on another port: `PORT=8080 python app.py` (macOS/Linux) or
+  `$env:PORT=8080; python app.py` (Windows PowerShell), then open http://localhost:8080.
+- **Wrong town picked**: add the region or country ("Gravenhurst, Canada", or `--country Canada`). Several
+  places share most names. Use the English place name.
+- **"Weather forecast unavailable" or lookups failing**: you're offline, or a free service is briefly down.
+  Built-in targets and planets still work offline; the forecast itself needs Open-Meteo.
+- **First run is slow for a new place**: it downloads 15 years of weather history for the outlook (a few
+  seconds); after that it's cached for a month.
+- **PowerShell won't run `Activate.ps1`**: run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
+
 ## How a night is judged
+The rest of this page explains the science. You don't need it to use the tool.
+
 
 **1. Which 10-minute slots are shootable.** A slot counts when all of these hold, and it's part of a
 clear run of at least 30 minutes (shorter gaps go on setup, focus and cloud edges):
@@ -91,33 +164,15 @@ UTC+14, half-hour and 45-minute time zones and a DST change (`tests/test_global.
 targets (LMC, Omega Centauri, Carina) work, and anything that never rises from your site says so.
 If your device reports no altitude, the forecast's terrain height is used.
 
-## Run the dashboard
-```bash
-pip install -r requirements.txt
-python app.py
-```
-Open **http://localhost:5050**.
-
-- Search any city, or use your device's location
-- Search any target, tweak limits, and save locations (optionally with a measured Bortle class)
-- Click a night for a timeline chart: twilight, cloud and model spread, target and moon altitude, and
-  shootable slots shaded by their value. There's also an hour-by-hour table with moonlight and slot value
-- **Add to calendar** downloads an `.ics` event for the best window with a 1-hour setup reminder
-- **Night vision** switches the whole UI to red, so checking it at the telescope doesn't ruin your dark adaptation
-- **History** lists past forecasts from the local SQLite log
-
+## Night detail
 <p align="center"><img src="assets/clear-skies-night-detail.png" width="760" alt="Night detail with sky-quality tiles and timeline chart"></p>
 
-## Command line
-```bash
-python pipeline.py --city Gravenhurst --country Canada --target M31
-python pipeline.py --city Sydney --country Australia --target "Omega Centauri"
-python pipeline.py --city Denver --country "United States" --target "C/2023 A3" --moon-limit 2.5
-python pipeline.py --city Gravenhurst --country Canada --target M31 --outlook   # adds nights 16–30
-python pipeline.py --list-targets
-```
+Each night shows why it scored as it did: shootable hours and what they're worth, the biggest loss (moonlight,
+altitude or cloud), ensemble confidence, sky brightness, transparency, seeing, dew and gusts. The chart shades
+each shootable slot by its value, and the hour-by-hour table has the numbers behind it.
 
 ## Tests
+For contributors; not needed to use the tool:
 ```bash
 pip install pytest
 python -m pytest

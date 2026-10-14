@@ -10,17 +10,22 @@ from clearskies import db, geo, planner, targets
 
 def main():
     ap = argparse.ArgumentParser(description="Find the best astrophotography nights in the 16-day forecast.")
-    ap.add_argument("--city", default="Toronto")
-    ap.add_argument("--country", default="Canada")
+    ap.add_argument("--city", help="place to plan for, e.g. Gravenhurst, 'Sydney', 'Santiago' (required)")
+    ap.add_argument("--country", help="narrow the city search by country name or code, e.g. Canada, US, UK (optional)")
     ap.add_argument("--target", default="M31",
-                    help="anything: M31, 'Whirlpool', NGC891, Sh2-155, Vega, Jupiter, 'C/2023 A3', '10h41m +41d16m', or 'none'")
-    ap.add_argument("--max-cloud", type=int, default=planner.DEFAULTS["max_cloud"])
-    ap.add_argument("--max-precip", type=int, default=planner.DEFAULTS["max_precip"])
-    ap.add_argument("--min-alt", type=int, default=planner.DEFAULTS["min_alt"])
-    ap.add_argument("--moon-limit", type=float, default=planner.DEFAULTS["moon_limit"],
-                    help="max sky brightening from moonlight at the target, magnitudes (default 1.5)")
+                    help="anything: M31, Whirlpool, NGC891, Sh2-155, Vega, Jupiter, Ceres, 12P, "
+                         "'10h41m +41d16m', or 'none' for wide-field (default M31)")
+    ap.add_argument("--max-cloud", type=int, default=planner.DEFAULTS["max_cloud"], metavar="PCT",
+                    help=f"max cloud cover, %% (default {planner.DEFAULTS['max_cloud']})")
+    ap.add_argument("--max-precip", type=int, default=planner.DEFAULTS["max_precip"], metavar="PCT",
+                    help=f"max rain chance, %% (default {planner.DEFAULTS['max_precip']})")
+    ap.add_argument("--min-alt", type=int, default=planner.DEFAULTS["min_alt"], metavar="DEG",
+                    help=f"min target altitude, degrees (default {planner.DEFAULTS['min_alt']})")
+    ap.add_argument("--moon-limit", type=float, default=planner.DEFAULTS["moon_limit"], metavar="MAG",
+                    help=f"max sky brightening from moonlight at the target, magnitudes (default {planner.DEFAULTS['moon_limit']}; "
+                         "raise it for narrowband)")
     ap.add_argument("--outlook", action="store_true", help="also show nights 16–30 (astronomy + 15-year climatology)")
-    ap.add_argument("--list-targets", action="store_true")
+    ap.add_argument("--list-targets", action="store_true", help="list the quick-pick targets and exit")
     a = ap.parse_args()
 
     if a.list_targets:
@@ -28,6 +33,8 @@ def main():
             print(f"{t['id']:9} {t['name']}  ({t['type']})")
         return 0
 
+    if not a.city:
+        ap.error("--city is required, e.g. --city Gravenhurst --country Canada")
     db.init()
     try:
         loc = geo.find(a.city, a.country)
@@ -35,7 +42,8 @@ def main():
         print(err, file=sys.stderr)
         return 1
     if not loc:
-        print(f"Could not find '{a.city}' in '{a.country}'.", file=sys.stderr)
+        where = f" in '{a.country}'" if a.country else ""
+        print(f"Could not find '{a.city}'{where}. Try the English name, or drop --country.", file=sys.stderr)
         return 1
     if a.target == "none":
         target_id = "none"

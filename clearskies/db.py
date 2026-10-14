@@ -70,22 +70,11 @@ def connect():
     return conn
 
 
-# The Bortle classes that used to be hardcoded in pipeline.py, kept as starter locations.
-SEED_LOCATIONS = [
-    ("Toronto, Ontario, Canada", 43.7001, -79.4163, 175, "America/Toronto", 9),
-    ("Vancouver, British Columbia, Canada", 49.2497, -123.1193, 70, "America/Vancouver", 9),
-    ("Gravenhurst, Ontario, Canada", 44.9168, -79.3663, 250, "America/Toronto", 5),
-]
 
 
 def init():
     with closing(connect()) as conn, conn:
         conn.executescript(SCHEMA)
-        if not conn.execute("SELECT 1 FROM saved_locations LIMIT 1").fetchone():
-            conn.executemany(
-                "INSERT OR IGNORE INTO saved_locations (label, lat, lon, elevation, timezone, bortle) VALUES (?, ?, ?, ?, ?, ?)",
-                SEED_LOCATIONS,
-            )
 
 
 def cache_get(key, max_age):

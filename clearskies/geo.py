@@ -48,6 +48,7 @@ def search(query, count=8):
             "name": r.get("name"),
             "label": ", ".join(dict.fromkeys(p for p in parts if p)),
             "country": r.get("country", ""),
+            "country_code": r.get("country_code", ""),
             "lat": r["latitude"],
             "lon": r["longitude"],
             "elevation": r.get("elevation") or 0,
@@ -56,9 +57,16 @@ def search(query, count=8):
     return out
 
 
+# Common ways of writing a country that aren't its name or ISO code.
+_COUNTRY_ALIASES = {"usa": "us", "america": "us", "united states of america": "us", "uk": "gb",
+                    "britain": "gb", "great britain": "gb", "england": "gb", "scotland": "gb", "wales": "gb"}
+
+
 def find(city, country=None):
-    """Best match for a city, optionally restricted to a country (the original CLI behaviour)."""
+    """Best match for a city, optionally restricted to a country by name or ISO code ("US", "USA", "Canada")."""
     results = search(city, count=10)
     if country:
-        results = [r for r in results if r["country"].lower() == country.lower()]
+        want = country.strip().lower()
+        want = _COUNTRY_ALIASES.get(want, want)
+        results = [r for r in results if want in (r["country"].lower(), r["country_code"].lower())]
     return results[0] if results else None

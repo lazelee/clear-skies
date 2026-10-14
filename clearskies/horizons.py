@@ -32,7 +32,9 @@ def command_for(text):
         return MAJOR[t.lower()]
     if re.match(r"^\d+[PI](/.*)?$", t, re.I) or re.match(r"^[PCDXIA]/\d{4}", t, re.I):
         # Periodic comets have one record per apparition: take the one closest to now.
-        return f"DES={t.split('/')[0] if re.match(r'^\d+[PI]/', t, re.I) else t};CAP;NOFRAG;"
+        # "1P/Halley" → "1P"; "C/2023 A3" stays whole.
+        des = t.split("/")[0] if re.match(r"^\d+[PI]/", t, re.I) else t
+        return f"DES={des};CAP;NOFRAG;"
     return f"{t};"  # trailing ';' = small-body search (name, number or designation)
 
 

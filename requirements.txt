@@ -3,3 +3,5 @@ requests>=2.31
 astropy>=6.0
 numpy>=1.24
 Pillow>=10.0
+# Windows has no system time-zone database; Python reads it from this package there.
+tzdata; sys_platform == "win32"
