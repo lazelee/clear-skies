@@ -42,6 +42,7 @@ const state = {
   defaults: null,
   targets: [],
   plan: null,
+  outlook: null,
   selected: null,
   saved: [],
   loading: 0,
@@ -108,7 +109,9 @@ async function runForecast() {
     const keep = plan.nights.find((n) => n.date === state.selected);
     state.selected = keep ? keep.date : plan.best?.date || plan.nights.find((n) => n.darkness !== "none")?.date || plan.nights[0]?.date;
     status(null);
+    state.outlook = null;
     render();
+    loadOutlook(ticket);
   } catch (err) {
     if (ticket !== state.loading) return;
     status("error", err.message);
@@ -129,6 +132,63 @@ function render() {
   renderNights();
   renderDetail();
   renderSaved();
+  renderOutlook();
+}
+
+// ---------- 30-day outlook ----------
+// Loaded after the forecast so the forecast shows immediately (the first climate download takes a few seconds).
+async function loadOutlook(ticket) {
+  try {
+    const outlook = await api(`/api/outlook?${queryParams()}`);
+    if (ticket !== state.loading) return;
+    state.outlook = outlook;
+  } catch (err) {
+    if (ticket !== state.loading) return;
+    state.outlook = { error: err.message };
+  }
+  renderOutlook();
+}
+
+function renderOutlook() {
+  const wrap = $("#outlookWrap");
+  const box = $("#outlook");
+  wrap.hidden = false;
+  const o = state.outlook;
+  if (!o) {
+    box.innerHTML = Array.from({ length: 6 }, () => `<div class="night skeleton" style="min-height:150px"></div>`).join("");
+    return;
+  }
+  if (o.error) {
+    box.innerHTML = `<p class="muted">Outlook unavailable: ${esc(o.error)}</p>`;
+    return;
+  }
+  $("#outlookNote").textContent = o.climate
+    ? `No weather forecast reaches this far. The astronomy is exact; clear odds are how often this spot was clear (≤ ${o.settings.max_cloud}% cloud) on these dates and hours in ${o.climate.years}.`
+    : "No weather forecast reaches this far. The astronomy is exact; historical clear odds are unavailable right now.";
+  const south = state.plan.location.lat < 0;
+  const label = state.plan.metric.label;
+  box.innerHTML = o.nights
+    .map((n) => {
+      const [dow, ...rest] = n.label.split(" ");
+      const best = o.best_dates.includes(n.date);
+      const firstBest = best && o.best_dates[0] === n.date;
+      const odds = n.clear_chance != null ? `${n.clear_chance}% clear odds` : "";
+      const exp = n.expected_hours != null ? `≈ <b>${n.expected_hours} h</b> expected` : "";
+      return `<div class="night outlook-night${n.potential_hours ? "" : " is-poor"}${best ? " is-best" : ""}" role="listitem"
+          title="${esc(n.reasons.join(" "))}" aria-label="${esc(`${n.label}: ${n.reasons.join(" ")}`)}">
+        <div class="night-top">
+          <div class="night-date"><b>${esc(dow)}</b><small>${esc(rest.join(" "))}</small></div>
+          ${firstBest ? `<span class="pill" title="Nights within 10% of the best expected dark-sky hours">Best stretch</span>` : ""}
+        </div>
+        <div class="night-mid">
+          ${moonSvg(n.moon.elongation, south)}
+          <div class="night-stat">${n.potential_hours ? `<b>${n.potential_hours} h</b> if clear` : "No window"}<br /><small>${esc(label)}</small></div>
+        </div>
+        <p class="outlook-odds">${[odds, exp].filter(Boolean).join(" · ")}</p>
+        <p class="night-why">${n.window ? `Window ${esc(n.window)} · moon ${n.moon.illumination}%` : esc(n.reasons[0] || "")}</p>
+      </div>`;
+    })
+    .join("");
 }
 
 function renderHero() {

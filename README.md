@@ -60,6 +60,20 @@ your limit (each model weighted equally) and reports:
 The headline **best night** is chosen by score × chance clear, so a confident 70 beats a doubtful 90.
 Beyond ~11 days only GEM reaches, so those nights are never marked High confidence.
 
+## 30-day outlook
+Cloud forecasts carry little real skill beyond about two weeks, so nights 16–30 aren't forecast. They're an
+**outlook** instead, shown separately on the dashboard (and with `--outlook` on the command line):
+
+- **If clear**: the exact astronomy (darkness, moonlight at your target, target altitude) turned into
+  dark-sky hours, so the moon cycle and your target's best weeks are visible a month ahead
+- **Clear odds**: how often this spot was actually clear (within your cloud limit) at those dates and
+  hours over the last 15 years, from ERA5 reanalysis via the Open-Meteo archive (±7 days pooled)
+- **Expected**: dark-sky hours if clear × the historical clear fraction, an honest planning average
+- A **best stretch** highlights every night within 10% of the best expected value; climate averages
+  can't separate one night from its neighbours more finely than that
+
+<p align="center"><img src="assets/clear-skies-outlook.png" width="760" alt="30-day outlook: dark-sky hours if clear, historical clear odds and expected hours"></p>
+
 ## Any target
 Type anything into the target box:
 
@@ -99,6 +113,7 @@ Open **http://localhost:5050**.
 python pipeline.py --city Gravenhurst --country Canada --target M31
 python pipeline.py --city Sydney --country Australia --target "Omega Centauri"
 python pipeline.py --city Denver --country "United States" --target "C/2023 A3" --moon-limit 2.5
+python pipeline.py --city Gravenhurst --country Canada --target M31 --outlook   # adds nights 16–30
 python pipeline.py --list-targets
 ```
 
@@ -115,7 +130,7 @@ brightness, USNO moon phases and moonset times), and the planner is run around t
 app.py              Flask server + JSON API (localhost:5050)
 pipeline.py         command-line run
 clearskies/
-  planner.py        slots, effective hours, scoring, confidence, reasons
+  planner.py        slots, effective hours, scoring, confidence, reasons, 30-day outlook
   skyquality.py     airmass, extinction, sky brightness, K&S moonlight, slot weights
   sky.py            sun/moon/planet/target positions (Astropy, offline)
   targets.py        presets, catalog search, SIMBAD and coordinate resolving
@@ -132,7 +147,7 @@ tests/              physics and worldwide planner tests
 ```
 
 ## Data sources
-- [Open-Meteo](https://open-meteo.com): geocoding, 16-day hourly weather, ensemble forecasts and CAMS aerosol forecasts (no API key)
+- [Open-Meteo](https://open-meteo.com): geocoding, 16-day hourly weather, ensemble forecasts, CAMS aerosol forecasts and the ERA5 historical archive (no API key)
 - [Astropy](https://www.astropy.org): sun, moon, planet and target positions, computed on your machine
 - [JPL Horizons](https://ssd.jpl.nasa.gov/horizons/): comet and asteroid ephemerides
 - [CDS Sesame](https://cds.unistra.fr/cgi-bin/Sesame): name resolution via SIMBAD, NED and VizieR

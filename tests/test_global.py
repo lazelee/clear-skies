@@ -46,6 +46,8 @@ def clear_weather(monkeypatch):
     monkeypatch.setattr(weather, "fetch", fake_fetch)
     monkeypatch.setattr(weather, "fetch_ensemble", lambda lat, lon: None)
     monkeypatch.setattr(weather, "fetch_aerosol", lambda lat, lon: None)
+    # Fifteen years of hourly history: clear every hour (so expected = potential) unless a test overrides it.
+    monkeypatch.setattr(weather, "fetch_climate", lambda lat, lon: {"start": 1293840000, "years": "2011–2025", "cloud": [0] * (15 * 365 * 24)})
     monkeypatch.setattr(planner, "_site_sky", lambda lat, lon: {"sqm": 21.5, "bortle": 3, "source": "test", "atlas": None})
 
 
@@ -165,3 +167,45 @@ def test_settings_are_clamped():
     s = planner.clean_settings({"max_cloud": 500, "min_alt": -10, "moon_limit": "nan", "max_precip": "x"})
     assert s == {"max_cloud": 100, "max_precip": 15, "min_alt": 0, "moon_limit": 1.5}
     assert np.isfinite(planner.clean_settings({"moon_limit": "inf"})["moon_limit"])
+
+
+def _outlook(site, target="none"):
+    _, lat, lon, elev, tz = site
+    return planner.outlook({"label": site[0], "lat": lat, "lon": lon, "elevation": elev, "timezone": tz}, target, {})
+
+
+@pytest.mark.parametrize("site", SITES, ids=[s[0] for s in SITES])
+def test_outlook_covers_nights_16_to_30_everywhere(site):
+    o = _outlook(site)
+    p = _plan(site)
+    assert len(o["nights"]) == planner.OUTLOOK_NIGHTS - planner.NIGHTS
+    assert o["nights"][0]["date"] > p["nights"][-1]["date"], "outlook starts after the forecast ends"
+    dates = [n["date"] for n in o["nights"]]
+    assert dates == sorted(set(dates))
+    for n in o["nights"]:
+        assert 0 <= n["potential_hours"] <= n["usable_hours"] + 1e-9
+        assert n["reasons"]
+        if n["expected_hours"] is not None and n["darkness"] != "none":
+            # With a perfectly clear climate record the expected hours equal the astronomical potential.
+            assert n["expected_hours"] == pytest.approx(n["potential_hours"], abs=0.11)
+            assert n["clear_chance"] == 100
+
+
+def test_outlook_scales_with_climate(monkeypatch):
+    # Clear only in even UTC hours: about half the potential is expected, and odds land near 50%.
+    cloud = [0 if h % 2 == 0 else 100 for h in range(15 * 365 * 24)]
+    monkeypatch.setattr(weather, "fetch_climate", lambda lat, lon: {"start": 1293840000, "years": "2011–2025", "cloud": cloud})
+    o = _outlook(SITES[2])
+    for n in o["nights"]:
+        if n["potential_hours"] > 2:
+            assert 0.3 < n["expected_hours"] / n["potential_hours"] < 0.7
+            assert 30 <= n["clear_chance"] <= 70
+    assert o["best_dates"] and all(d in [n["date"] for n in o["nights"]] for d in o["best_dates"])
+
+
+def test_outlook_without_climate_still_gives_astronomy(monkeypatch):
+    monkeypatch.setattr(weather, "fetch_climate", lambda lat, lon: None)
+    o = _outlook(SITES[0], "M31")
+    assert o["climate"] is None
+    assert all(n["expected_hours"] is None for n in o["nights"])
+    assert any(n["potential_hours"] > 0 for n in o["nights"])

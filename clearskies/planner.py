@@ -365,7 +365,12 @@ def _drop_short_runs(mask, min_slots):
     return out
 
 
-def _night(day, t, sm, tgt, tgt_az, wx, ens, k, aod, site, s, target, tz, now):
+def _sky_night(day, t, sm, tgt, tgt_az, k, site, target, tz):
+    """
+    The weather-independent half of a night: sun, darkness, moon and where the target is,
+    plus moonlight at the target. Shared by the forecast and the outlook.
+    Returns (night dict, context of per-slot arrays).
+    """
     night = {"date": day.isoformat(), "label": f"{day:%a %b} {day.day}"}
     sun, moon = sm["sun_alt"], sm["moon_alt"]
     planetary = target["mode"] == "planetary"
@@ -418,6 +423,16 @@ def _night(day, t, sm, tgt, tgt_az, wx, ens, k, aod, site, s, target, tz, now):
     moon_mag = np.where(moon_up, skyquality.moon_brightening_mag(site["sqm"], moon, sm["phase_angle"], sep, np.clip(look_alt, 0.5, 90), k), 0.0)
     if tgt is not None:
         night["moon"]["separation"] = round(float(sep[mid]), 0)
+    ctx = {"sun": sun, "moon": moon, "planetary": planetary, "dark": dark, "dark_level": dark_level, "dark_idx": dark_idx,
+           "dusk": dusk, "dawn": dawn, "mid": mid, "look_alt": look_alt, "sep": sep, "moon_mag": moon_mag}
+    return night, ctx
+
+
+def _night(day, t, sm, tgt, tgt_az, wx, ens, k, aod, site, s, target, tz, now):
+    night, c = _sky_night(day, t, sm, tgt, tgt_az, k, site, target, tz)
+    sun, moon, planetary, dark, dark_level = c["sun"], c["moon"], c["planetary"], c["dark"], c["dark_level"]
+    dusk, dawn, look_alt, sep, moon_mag = c["dusk"], c["dawn"], c["look_alt"], c["sep"], c["moon_mag"]
+    darkness = night["darkness"]
 
     cloud = wx["cloud_cover"]
     precip = wx["precipitation_probability"]
@@ -656,3 +671,158 @@ def _reasons(n, dark, future, have_wx, cloud_ok, precip_ok, moon_ok, tgt_ok, raw
     if not n["usable_minutes"] and len(out) == 0:
         out.append("No window meets your limits.")
     return out
+
+
+# ---------- 30-day outlook ----------
+# Past ~2 weeks cloud forecasts carry no real skill, so nights 16–30 are an outlook instead:
+# exact astronomy (dark hours, moonlight, target altitude → dark-sky hours *if clear*) combined
+# with climatology (how often this place was actually clear at that date and hour) into the
+# *expected* dark-sky hours.
+OUTLOOK_NIGHTS = 30
+CLIMATE_WINDOW_DAYS = 7  # pool past hours within ±7 days of the date
+
+
+def _climate_tables(clim, max_cloud):
+    """
+    Per (UTC day-of-year, UTC hour), from the climate record: p = share of hours with cloud
+    within `max_cloud`, q = mean expected clear fraction (1 − cloud) counting only those hours.
+    """
+    cloud = _series(clim["cloud"])
+    t = int(clim["start"]) + 3600 * np.arange(len(cloud), dtype=np.int64)
+    days = t.astype("datetime64[s]").astype("datetime64[D]")
+    doy = (days - days.astype("datetime64[Y]")).astype(int)
+    hour = (t // 3600) % 24
+    ok = ~np.isnan(cloud)
+    within = ok & (np.nan_to_num(cloud, nan=101) <= max_cloud)
+    n, p, q = (np.zeros((366, 24)) for _ in range(3))
+    np.add.at(n, (doy[ok], hour[ok]), 1)
+    np.add.at(p, (doy, hour), within.astype(float))
+    np.add.at(q, (doy, hour), np.where(within, 1 - np.nan_to_num(cloud) / 100, 0.0))
+    # Pool neighbouring dates (circular across New Year) so each cell has ~15 days × 15 years of data.
+    pool = lambda a: sum(np.roll(a, k, axis=0) for k in range(-CLIMATE_WINDOW_DAYS, CLIMATE_WINDOW_DAYS + 1))  # noqa: E731
+    n, p, q = pool(n), pool(p), pool(q)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(n > 0, p / n, np.nan), np.where(n > 0, q / n, np.nan)
+
+
+def _score(hours):
+    return max(1, int(round(100 * (1 - math.exp(-hours / SCORE_SCALE_H))))) if hours > 0 else 0
+
+
+def outlook(location, target_id="none", settings=None, now=None):
+    """Nights NIGHTS+1 … OUTLOOK_NIGHTS: dark-sky hours if clear, historical clear odds, expected hours."""
+    s = clean_settings(settings or {})
+    target = targets.get(target_id)
+    lat, lon = float(location["lat"]), float(location["lon"])
+    wx = weather.fetch(lat, lon)
+    elevation = float(location.get("elevation") or wx.get("elevation") or 0)
+    tz = ZoneInfo(location.get("timezone") or wx.get("timezone") or "UTC")
+    now = now or time.time()
+    local_now = datetime.fromtimestamp(now, tz)
+    first = local_now.date() - (timedelta(days=1) if local_now.hour < 12 else timedelta(0))
+    noons = [int(datetime.combine(first + timedelta(days=i), datetime.min.time(), tz).replace(hour=12).timestamp())
+             for i in range(NIGHTS, OUTLOOK_NIGHTS + 1)]
+    start = noons[0] - noons[0] % sky.STEP_SECONDS
+    count = (noons[-1] - start) // sky.STEP_SECONDS
+    t = sky.grid(start, count)
+
+    sm = sky.sun_moon(round(lat, 4), round(lon, 4), round(elevation), start, count)
+    target, tgt_alt, tgt_az = _target_track(target, lat, lon, elevation, start, count)
+    k = skyquality.extinction_coefficient(elevation) * np.ones(len(t))  # typical air; no haze forecast this far out
+    site = _site_sky(lat, lon)
+
+    clim = weather.fetch_climate(lat, lon)
+    p_slot = q_slot = None
+    if clim:
+        p_tab, q_tab = _climate_tables(clim, s["max_cloud"])
+        mid = (t + sky.STEP_SECONDS // 2).astype(np.int64)
+        days = mid.astype("datetime64[s]").astype("datetime64[D]")
+        doy = (days - days.astype("datetime64[Y]")).astype(int)
+        hour = (mid // 3600) % 24
+        p_slot, q_slot = p_tab[doy, hour], q_tab[doy, hour]
+
+    nights = []
+    for i in range(len(noons) - 1):
+        a = int(np.searchsorted(t, noons[i]))
+        b = int(np.searchsorted(t, noons[i + 1]))
+        cut = lambda arr: None if arr is None else arr[a:b]  # noqa: E731
+        nights.append(_outlook_night(first + timedelta(days=NIGHTS + i), t[a:b], {key: v[a:b] for key, v in sm.items()},
+                                     cut(tgt_alt), cut(tgt_az), k[a:b], cut(p_slot), cut(q_slot), site, s, target, tz,
+                                     clim["years"] if clim else None))
+    best = max((n for n in nights if n["expected_hours"]), key=lambda n: n["expected_hours"], default=None)
+    # Climate averages can't separate 1.5 h from 1.6 h, so flag every night within 10% of the best.
+    top = [n["date"] for n in nights if best and n["expected_hours"] and n["expected_hours"] >= 0.9 * best["expected_hours"]]
+    return {
+        "target": {key: v for key, v in target.items() if key != "command"},
+        "settings": s,
+        "nights": nights,
+        "best": best and {key: best[key] for key in ("date", "label", "window", "potential_hours", "expected_hours", "clear_chance")},
+        "best_dates": top,
+        "climate": {"years": clim["years"], "source": "ERA5 reanalysis (Open-Meteo archive)",
+                    "window_days": CLIMATE_WINDOW_DAYS} if clim else None,
+    }
+
+
+def _outlook_night(day, t, sm, tgt, tgt_az, k, p, q, site, s, target, tz, years):
+    night, c = _sky_night(day, t, sm, tgt, tgt_az, k, site, target, tz)
+    planetary, dark, moon_mag, look_alt = c["planetary"], c["dark"], c["moon_mag"], c["look_alt"]
+    moon_ok = np.ones(len(t), bool) if planetary else moon_mag <= s["moon_limit"]
+    tgt_ok = np.ones(len(t), bool) if tgt is None else tgt >= s["min_alt"]
+    sky_ok = _drop_short_runs(dark & moon_ok & tgt_ok, MIN_RUN_MIN // STEP_MIN)
+
+    # Value of each slot if the sky is clear (seeing unknown this far out: typical upper air).
+    if planetary:
+        w = skyquality.planetary_weight(look_alt, k, 0, np.nan)
+    else:
+        f_alt, f_moon, _ = skyquality.deep_sky_components(site["sqm"], np.clip(look_alt, 0.5, 90), c["moon"],
+                                                         sm["phase_angle"], c["sep"], k, 0)
+        w = f_alt * f_moon * (NAUTICAL_WEIGHT if night["darkness"] == "nautical" else 1.0)
+    w = np.where(sky_ok, w, 0.0)
+
+    night["usable_hours"] = round(int(sky_ok.sum()) * STEP_MIN / 60, 1)
+    potential = float(w.sum()) * STEP_MIN / 60
+    night["potential_hours"] = round(potential, 1)
+    night["potential_score"] = _score(potential)
+    runs = _blocks(sky_ok)
+    longest = max(runs, key=lambda r: r[1] - r[0], default=None)
+    lo_clip = c["dusk"][0] if c["dusk"] else -np.inf
+    hi_clip = c["dawn"][-1] if c["dawn"] else np.inf
+    night["window"] = (f"{_hhmm(max(t[longest[0]], lo_clip), tz)}–"
+                       f"{_hhmm(min(t[longest[1] - 1] + sky.STEP_SECONDS, hi_clip), tz)}") if longest else None
+
+    if p is not None and (sky_ok.any() or dark.any()):
+        ref = (sky_ok if sky_ok.any() else dark) & ~np.isnan(p)
+        night["clear_chance"] = int(round(float(p[ref].mean()) * 100)) if ref.any() else None
+        expected = float(np.nansum(w * np.nan_to_num(q))) * STEP_MIN / 60
+        night["expected_hours"] = round(expected, 1)
+        night["expected_score"] = _score(expected)
+    else:
+        night["clear_chance"] = night["expected_hours"] = night["expected_score"] = None
+
+    if tgt is not None:
+        in_dark = np.where(dark, tgt, -90)
+        peak = int(np.argmax(in_dark)) if dark.any() else int(np.argmax(tgt))
+        night["target"] = {"peak_alt": round(float(tgt[peak]), 1), "peak_time": _hhmm(t[peak], tz)}
+    else:
+        night["target"] = None
+
+    out = []
+    tname = target["short"] if target["kind"] != "none" else None
+    if night["darkness"] == "none":
+        out.append("No real darkness this night.")
+    elif night["usable_hours"]:
+        out.append(f"If clear: {night['usable_hours']:g} h shootable, best {night['window']}, worth "
+                   f"{night['potential_hours']:g} {'seeing-weighted' if planetary else 'dark-sky'} hours.")
+    else:
+        if tname and night["target"] and night["target"]["peak_alt"] < s["min_alt"]:
+            where = "never rises here" if night["target"]["peak_alt"] < 0 else f"peaks at only {night['target']['peak_alt']:g}° while dark"
+            out.append(f"{tname} {where} (min {s['min_alt']}°).")
+        if not planetary and (dark & ~moon_ok).mean() > 0.15:
+            out.append(f"Moon ({night['moon']['illumination']}% lit) brightens the sky past your {s['moon_limit']:g} mag limit for most of the dark hours.")
+        if not out:
+            out.append("No dark, moon-free stretch of 30 min or more with the target high enough.")
+    if night["clear_chance"] is not None and night["darkness"] != "none":
+        out.append(f"Historically clear (≤ {s['max_cloud']}% cloud) {night['clear_chance']}% of the time on these dates and hours "
+                   f"({years}), so expect about {night['expected_hours']:g} h.")
+    night["reasons"] = out
+    return night

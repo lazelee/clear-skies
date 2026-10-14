@@ -120,3 +120,35 @@ def fetch_aerosol(lat, lon):
     data = {"time": hourly["time"], "aod": hourly["aerosol_optical_depth"]}
     db.cache_put(key, data)
     return data
+
+
+ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+CLIMATE_YEARS = 15
+CLIMATE_CACHE_SECONDS = 30 * 86400  # the past doesn't change; refresh monthly to roll the years forward
+
+
+def fetch_climate(lat, lon):
+    """
+    Hourly total cloud cover for the last CLIMATE_YEARS full years (ERA5 reanalysis), as
+    {"start": unix of the first hour (UTC), "years": "2011–2025", "cloud": [...]}, or None.
+    """
+    key = f"clim:{round(lat, 2)},{round(lon, 2)}"
+    cached = db.cache_get(key, CLIMATE_CACHE_SECONDS)
+    if cached:
+        return cached
+    last = time.gmtime().tm_year - 1
+    first = last - CLIMATE_YEARS + 1
+    params = {"latitude": lat, "longitude": lon, "start_date": f"{first}-01-01", "end_date": f"{last}-12-31",
+              "hourly": "cloud_cover", "timezone": "GMT", "timeformat": "unixtime"}
+    try:
+        res = requests.get(ARCHIVE_URL, params=params, timeout=60)
+        res.raise_for_status()
+        hourly = res.json()["hourly"]
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+    cloud = [None if v is None else int(round(v)) for v in hourly["cloud_cover"]]
+    if not hourly["time"] or all(v is None for v in cloud):
+        return None
+    data = {"start": hourly["time"][0], "years": f"{first}–{last}", "cloud": cloud}
+    db.cache_put(key, data)
+    return data

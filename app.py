@@ -78,6 +78,13 @@ def forecast():
     return jsonify(plan)
 
 
+@app.get("/api/outlook")
+def outlook():
+    """Nights 16–30: astronomy plus climatology (no weather forecast reaches that far)."""
+    args = request.args
+    return jsonify(planner.outlook(_location_from_args(args), args.get("target", "none"), args))
+
+
 @app.get("/api/ics")
 def ics():
     plan = _plan(request.args)

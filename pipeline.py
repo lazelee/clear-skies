@@ -19,6 +19,7 @@ def main():
     ap.add_argument("--min-alt", type=int, default=planner.DEFAULTS["min_alt"])
     ap.add_argument("--moon-limit", type=float, default=planner.DEFAULTS["moon_limit"],
                     help="max sky brightening from moonlight at the target, magnitudes (default 1.5)")
+    ap.add_argument("--outlook", action="store_true", help="also show nights 16–30 (astronomy + 15-year climatology)")
     ap.add_argument("--list-targets", action="store_true")
     a = ap.parse_args()
 
@@ -76,6 +77,23 @@ def main():
             print(f"  · {r}")
     else:
         print("\nNo shootable nights in the forecast.")
+
+    if a.outlook:
+        o = planner.outlook(loc, target_id, settings)
+        clim = f"clear odds from {o['climate']['years']} (ERA5)" if o["climate"] else "no climate data"
+        print(f"\nOutlook, nights 16–30 (no forecast this far out; {clim})\n")
+        print(f"{'Night':11} {'If clear':>8} {'Dark-sky':>8}  {'Clear odds':>10}  {'Expected':>8}  {'Window':12} Moon")
+        for n in o["nights"]:
+            odds = f"{n['clear_chance']}%" if n["clear_chance"] is not None else "—"
+            exp = f"{n['expected_hours']}h" if n["expected_hours"] is not None else "—"
+            print(f"{n['label']:11} {n['usable_hours']:>7}h {n['potential_hours']:>7}h  {odds:>10}  {exp:>8}  {n['window'] or '—':12} "
+                  f"{n['moon']['phase']} {n['moon']['illumination']}%")
+        if o["best"]:
+            b = o["best"]
+            stretch = [n["label"] for n in o["nights"] if n["date"] in o["best_dates"]]
+            span = stretch[0] if len(stretch) == 1 else f"{stretch[0]} to {stretch[-1]}"
+            print(f"\nBest stretch: {span} (within 10% of the best: up to {b['potential_hours']} h if clear, "
+                  f"about {b['expected_hours']} h expected)")
     return 0
 
 
