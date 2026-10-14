@@ -1,23 +1,39 @@
-"""Turns weather + ephemeris into a ranked plan of shootable nights."""
+"""
+Turns weather + ephemeris into a ranked plan of shootable nights.
+
+Each 10-minute slot that passes your limits is weighted by how much it's worth for imaging
+(see skyquality.py): for deep-sky targets, signal-to-noise relative to a clear moonless sky
+at this site's zenith; for planets and the Moon, seeing- and altitude-limited resolution.
+A night's "effective hours" is the sum of those weights, and its score follows from it.
+"""
+import math
 import time
 import warnings
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from . import db, sky, targets, weather
+from . import db, geo, horizons, lightpollution, sky, skyquality, targets, weather
 
-DEFAULTS = {"max_cloud": 25, "max_precip": 15, "min_alt": 30, "moon_tol": 25}
-LIMITS = {"max_cloud": (0, 100), "max_precip": (0, 100), "min_alt": (0, 80), "moon_tol": (0, 100)}
+DEFAULTS = {"max_cloud": 25, "max_precip": 15, "min_alt": 30, "moon_limit": 1.5}
+LIMITS = {"max_cloud": (0, 100), "max_precip": (0, 100), "min_alt": (0, 80), "moon_limit": (0.1, 5.0)}
 ASTRO_DARK = -18.0
 NAUTICAL_DARK = -12.0
+CIVIL_DARK = -6.0  # planets and the Moon can be imaged from the end of civil twilight
 SUNSET_ALT = -0.833
 # Topocentric altitude of the moon's centre when its upper limb is on the horizon:
 # 34' refraction + ~15.5' semi-diameter (parallax is already in astropy's topocentric position).
 MOON_HORIZON = -0.833
 STEP_MIN = sky.STEP_SECONDS // 60
 NIGHTS = 15
+MIN_RUN_MIN = 30  # shorter clear gaps aren't worth counting: setup, focus and cloud edges eat them
+SCORE_SCALE_H = 2.5  # score = 100·(1 − e^(−hours/2.5)): 0.75 h → 26, 2 h → 55, 4 h → 80, 6 h → 91
+# Nights that only reach nautical twilight (high latitudes in summer): the sky is still lit by the
+# sun. Twilight sky brightness isn't modelled, so these slots count at a flat, conservative 60%.
+NAUTICAL_WEIGHT = 0.6
+DEW_LIKELY_C, DEW_POSSIBLE_C = 3.0, 5.0  # air within this of its dew point; clear-sky surfaces run 2–4 °C colder
+GUST_WARN_KMH = 30
 
 
 def clean_settings(raw):
@@ -27,8 +43,11 @@ def clean_settings(raw):
             value = float(raw.get(key, default))
         except (TypeError, ValueError):
             value = default
+        if not math.isfinite(value):
+            value = default
         lo, hi = LIMITS[key]
-        out[key] = int(min(hi, max(lo, value)))
+        value = min(hi, max(lo, value))
+        out[key] = round(value, 1) if isinstance(default, float) else int(value)
     return out
 
 
@@ -192,30 +211,78 @@ def _verdict(score):
     return "Poor"
 
 
-def _tip(target, bortle):
-    if not bortle or target["id"] == "none":
+def _tip(target, sky_site):
+    bortle = sky_site.get("bortle")
+    if not bortle or target["kind"] == "none" or target["mode"] == "planetary":
         return None
     kind = target["type"]
-    if bortle >= 6 and kind in ("Emission nebula", "Supernova remnant", "Planetary nebula"):
+    if bortle >= 6 and kind in ("Emission nebula", "Supernova remnant", "Planetary nebula", "Cluster + nebula"):
         return f"Bortle {bortle} sky: a dual-band (Hα/OIII) filter will cut most of the light pollution."
-    if bortle >= 7 and kind == "Galaxy":
-        return f"Bortle {bortle} sky: galaxies need long integration here, or a trip to a darker site."
+    if bortle >= 7 and kind in ("Galaxy", "Galaxy group", "Reflection nebula", "Dark nebula", "Comet"):
+        return f"Bortle {bortle} sky: {kind.lower()}s need long integration here, or a trip to a darker site."
     if bortle >= 7 and kind == "Milky Way":
         return f"Bortle {bortle} sky: the Milky Way core will be washed out; find a darker site."
     return None
 
 
+def _site_sky(lat, lon):
+    """Zenith sky brightness: your saved Bortle class if you set one, else the satellite atlas."""
+    manual = db.bortle_for(lat, lon)
+    atlas = lightpollution.lookup(lat, lon)
+    if manual:
+        return {"sqm": skyquality.BORTLE_TO_SQM[manual], "bortle": manual, "source": "your setting",
+                "atlas": atlas}
+    if atlas:
+        return {**atlas, "atlas": atlas}
+    return {"sqm": 21.0, "bortle": 4, "source": "assumed (atlas unavailable)", "atlas": None}
+
+
+def _aerosol_on_grid(aer, t):
+    """AOD per slot; past the ~5-day forecast, use the forecast's median for this place."""
+    if not aer:
+        return None
+    times = np.asarray(aer["time"], dtype=float)
+    vals = _series(aer["aod"])
+    grid = _interp_instant(times, vals, t + sky.STEP_SECONDS / 2)
+    known = vals[~np.isnan(vals)]
+    if len(known):
+        grid = np.where(np.isnan(grid), float(np.median(known)), grid)
+    return grid
+
+
+def _target_track(target, lat, lon, elevation, start, count):
+    """(target, alt, az) on the grid; target may gain a resolved name. alt is None for 'none'."""
+    key = (round(lat, 4), round(lon, 4), round(elevation))
+    if target["kind"] == "none":
+        return target, None, None
+    if target["kind"] == "fixed":
+        alt, az = sky.fixed_altaz(*key, target["ra"], target["dec"], start, count)
+        return target, alt, az
+    if target["kind"] == "body":
+        alt, az = sky.body_altaz(*key, target["id"][5:], start, count)
+        return target, alt, az
+    try:
+        name, th, ra, dec = horizons.track(target["command"], lat, lon, elevation, start, start + count * sky.STEP_SECONDS)
+    except horizons.HorizonsError as err:
+        raise geo.LookupError_(f"JPL Horizons: {err}") from err
+    ra_g, dec_g = horizons.on_grid(th, ra, dec, sky.grid(start, count))
+    alt, az = sky.track_altaz(*key, ra_g, dec_g, start, count)
+    if name:
+        target = {**target, "name": name, "short": name}
+    return target, alt, az
+
+
 def plan(location, target_id="none", settings=None, now=None):
     """
     location: {label, lat, lon, elevation?, timezone?}
-    Returns every night in the forecast with a score, windows and a chart timeline.
+    Returns every night in the forecast with effective hours, a score, windows and a chart timeline.
     """
     s = clean_settings(settings or {})
     target = targets.get(target_id)
     lat, lon = float(location["lat"]), float(location["lon"])
-    elevation = float(location.get("elevation") or 0)
-
     wx = weather.fetch(lat, lon)
+    # Browsers rarely report altitude; fall back to the forecast grid's terrain height.
+    elevation = float(location.get("elevation") or wx.get("elevation") or 0)
     tz = ZoneInfo(location.get("timezone") or wx.get("timezone") or "UTC")
     now = now or time.time()
     local_now = datetime.fromtimestamp(now, tz)
@@ -228,21 +295,22 @@ def plan(location, target_id="none", settings=None, now=None):
     count = (noons[-1] - start) // sky.STEP_SECONDS
     t = sky.grid(start, count)
 
-    sun_alt, moon_alt, illum, elong = sky.sun_moon(round(lat, 4), round(lon, 4), round(elevation), start, count)
-    tgt_alt = None
-    if target["ra"] is not None:
-        tgt_alt = sky.target_alt(round(lat, 4), round(lon, 4), round(elevation), target["ra"], target["dec"], start, count)
+    sm = sky.sun_moon(round(lat, 4), round(lon, 4), round(elevation), start, count)
+    target, tgt_alt, tgt_az = _target_track(target, lat, lon, elevation, start, count)
     wxg = _weather_on_grid(wx, t)
     ensg = _ensemble_on_grid(weather.fetch_ensemble(lat, lon), t, s["max_cloud"])
+    aod = _aerosol_on_grid(weather.fetch_aerosol(lat, lon), t)
+    k = skyquality.extinction_coefficient(elevation, aod) * np.ones(len(t))
+    site = _site_sky(lat, lon)
 
-    bortle = db.bortle_for(lat, lon)
     nights = []
     for i in range(NIGHTS):
         a = int(np.searchsorted(t, noons[i]))
         b = int(np.searchsorted(t, noons[i + 1]))
-        nights.append(_night(first + timedelta(days=i), t[a:b], sun_alt[a:b], moon_alt[a:b], illum[a:b], elong[a:b],
-                             None if tgt_alt is None else tgt_alt[a:b], {k: v[a:b] for k, v in wxg.items()},
-                             _slice(ensg, a, b), s, target, tz, now))
+        cut = lambda arr: None if arr is None else arr[a:b]  # noqa: E731
+        nights.append(_night(
+            first + timedelta(days=i), t[a:b], {key: v[a:b] for key, v in sm.items()}, cut(tgt_alt), cut(tgt_az),
+            {key: v[a:b] for key, v in wxg.items()}, _slice(ensg, a, b), k[a:b], cut(aod), site, s, target, tz, now))
 
     # Before noon the list starts with last night; drop it once its darkness is over.
     if nights and nights[0]["reasons"] == ["This night is already over."]:
@@ -257,83 +325,135 @@ def plan(location, target_id="none", settings=None, now=None):
 
     ranked = [n for n in nights if n["usable_minutes"] > 0]
     best = max(ranked, key=lambda n: (n["score"] * trust(n), n["score"], n["usable_minutes"]), default=None)
+    planetary = target["mode"] == "planetary"
     return {
-        "location": {**location, "lat": lat, "lon": lon, "elevation": elevation, "timezone": str(tz.key), "bortle": bortle},
-        "target": target,
+        "location": {**location, "lat": lat, "lon": lon, "elevation": elevation, "timezone": str(tz.key),
+                     "bortle": site["bortle"], "sqm": site["sqm"], "sky_source": site["source"],
+                     "atlas": site.get("atlas")},
+        "target": {key: v for key, v in target.items() if key != "command"},
         "settings": s,
+        "metric": {
+            "label": "seeing-weighted hours" if planetary else "dark-sky hours",
+            "explain": ("Clear hours weighted by altitude and forecast seeing (jet stream), relative to the "
+                        "object overhead in steady air." if planetary else
+                        "Clear hours weighted by moonlight, altitude and haze, relative to the same time with "
+                        "the target overhead on a clear, moonless night at this site."),
+        },
         "generated_at": int(now),
         "weather_fetched_at": wx.get("fetched_at"),
         "nights": nights,
-        "best": best and {k: best[k] for k in ("date", "label", "best_window", "score", "verdict", "usable_hours", "confidence")},
+        "best": best and {key: best[key] for key in ("date", "label", "best_window", "score", "verdict", "usable_hours",
+                                                      "effective_hours", "confidence")},
         "ensemble": ensg is not None,
+        "aerosol": aod is not None,
         "good_nights": sum(1 for n in nights if n["score"] >= 50),
-        "tip": _tip(target, bortle),
+        "tip": _tip(target, site),
     }
 
 
 def _slice(ens, a, b):
     if ens is None:
         return None
-    return {k: ({n: c[a:b] for n, c in v.items()} if isinstance(v, dict) else v[a:b]) for k, v in ens.items()}
+    return {key: ({n: c[a:b] for n, c in v.items()} if isinstance(v, dict) else v[a:b]) for key, v in ens.items()}
 
 
-def _night(day, t, sun, moon, illum, elong, tgt, wx, ens, s, target, tz, now):
-    label = day.strftime("%a %b %-d")
-    night = {"date": day.isoformat(), "label": label}
+def _drop_short_runs(mask, min_slots):
+    out = mask.copy()
+    for a, b in _blocks(mask):
+        if b - a < min_slots:
+            out[a:b] = False
+    return out
+
+
+def _night(day, t, sm, tgt, tgt_az, wx, ens, k, aod, site, s, target, tz, now):
+    night = {"date": day.isoformat(), "label": f"{day:%a %b} {day.day}"}
+    sun, moon = sm["sun_alt"], sm["moon_alt"]
+    planetary = target["mode"] == "planetary"
 
     sunsets = _crossings(sun, SUNSET_ALT, t)[1]
     sunrises = _crossings(sun, SUNSET_ALT, t)[0]
     night["sunset"] = _hhmm(sunsets[0], tz) if sunsets else None
     night["sunrise"] = _hhmm(sunrises[-1], tz) if sunrises else None
+    night["polar"] = "polar night" if (sun < SUNSET_ALT).all() else "midnight sun" if (sun > SUNSET_ALT).all() else None
 
-    dark_level = ASTRO_DARK
-    dark = sun <= ASTRO_DARK
-    darkness = "astronomical"
-    if not dark.any():
-        dark_level, dark, darkness = NAUTICAL_DARK, sun <= NAUTICAL_DARK, "nautical"
+    if planetary:
+        dark_level, darkness = CIVIL_DARK, "civil"
+        dark = sun <= CIVIL_DARK
         if not dark.any():
             darkness = "none"
+    else:
+        dark_level, darkness = ASTRO_DARK, "astronomical"
+        dark = sun <= ASTRO_DARK
+        if not dark.any():
+            dark_level, dark, darkness = NAUTICAL_DARK, sun <= NAUTICAL_DARK, "nautical"
+            if not dark.any():
+                darkness = "none"
     night["darkness"] = darkness
     dark_idx = np.flatnonzero(dark)
     dusk, dawn = _crossings(sun, dark_level, t)[1], _crossings(sun, dark_level, t)[0]
-    night["dark_start"] = _hhmm(dusk[0], tz) if dusk and len(dark_idx) else None
-    night["dark_end"] = _hhmm(dawn[-1], tz) if dawn and len(dark_idx) else None
+    # In polar night darkness has no start or end; report the edges of this noon-to-noon span.
+    night["dark_start"] = _hhmm(dusk[0] if dusk else t[dark_idx[0]], tz) if len(dark_idx) else None
+    night["dark_end"] = _hhmm(dawn[-1] if dawn else t[dark_idx[-1]] + sky.STEP_SECONDS, tz) if len(dark_idx) else None
     night["dark_hours"] = round(len(dark_idx) * STEP_MIN / 60, 1)
 
-    # Moon: phase at the middle of the night, rise/set during it.
     mid = dark_idx[len(dark_idx) // 2] if len(dark_idx) else len(t) // 2
-    # Only moon events between sunset and sunrise matter for the night.
     night_span = sun < 0
     m_rises, m_sets = (
         [x for x in ev if night_span[min(int(np.searchsorted(t, x)), len(t) - 1)]] for ev in _crossings(moon, MOON_HORIZON, t)
     )
-    moon_up_dark = float((moon[dark] > MOON_HORIZON).mean()) if dark.any() else 0.0
     night["moon"] = {
-        "phase": sky.phase_name(elong[mid]),
-        "illumination": int(round(illum[mid] * 100)),
-        "elongation": round(float(elong[mid]), 1),
+        "phase": sky.phase_name(sm["elong"][mid]),
+        "illumination": int(round(sm["illum"][mid] * 100)),
+        "elongation": round(float(sm["elong"][mid]), 1),
         "rise": _hhmm(m_rises[0], tz) if m_rises else None,
         "set": _hhmm(m_sets[0], tz) if m_sets else None,
-        "up_fraction": round(moon_up_dark, 2),
+        "up_fraction": round(float((moon[dark] > MOON_HORIZON).mean()) if dark.any() else 0.0, 2),
     }
+
+    # Where we look: the target, or the zenith for wide-field / sky-only plans.
+    look_alt = np.full(len(t), 90.0) if tgt is None else tgt
+    look_az = np.zeros(len(t)) if tgt_az is None else tgt_az
+    sep = skyquality.angular_separation(look_alt, look_az, moon, sm["moon_az"])
+    moon_up = moon > MOON_HORIZON
+    moon_mag = np.where(moon_up, skyquality.moon_brightening_mag(site["sqm"], moon, sm["phase_angle"], sep, np.clip(look_alt, 0.5, 90), k), 0.0)
+    if tgt is not None:
+        night["moon"]["separation"] = round(float(sep[mid]), 0)
 
     cloud = wx["cloud_cover"]
     precip = wx["precipitation_probability"]
+    jet = wx["wind_speed_250hPa"]
+    gust = wx["wind_gusts_10m"]
     have_wx = ~np.isnan(cloud)
     future = t + sky.STEP_SECONDS > now
     cloud_ok = have_wx & (np.nan_to_num(cloud, nan=101) <= s["max_cloud"])
     # A missing precipitation value alone (common at the far end of the forecast) doesn't veto a slot.
     precip_ok = np.isnan(precip) | (precip <= s["max_precip"])
-    moon_ok = (moon <= MOON_HORIZON) | (illum * 100 <= s["moon_tol"])
+    # Planets and the Moon cut through moonlight; for everything else the moon counts by how much
+    # it actually brightens the sky around the target (Krisciunas & Schaefer), not by phase alone.
+    moon_ok = np.ones(len(t), bool) if planetary else moon_mag <= s["moon_limit"]
     tgt_ok = np.ones(len(t), bool) if tgt is None else tgt >= s["min_alt"]
-    shoot = dark & future & cloud_ok & precip_ok & moon_ok & tgt_ok
+    raw_shoot = dark & future & cloud_ok & precip_ok & moon_ok & tgt_ok
+    shoot = _drop_short_runs(raw_shoot, MIN_RUN_MIN // STEP_MIN)
+
+    # Per-slot value (0–1) of imaging time; see skyquality.py.
+    if planetary:
+        weight = skyquality.planetary_weight(look_alt, k, cloud, jet)
+        f_alt = f_moon = None
+        f_clear = 1 - np.clip(np.nan_to_num(cloud, nan=100), 0, 100) / 100
+    else:
+        f_alt, f_moon, f_clear = skyquality.deep_sky_components(site["sqm"], np.clip(look_alt, 0.5, 90), moon, sm["phase_angle"], sep, k, cloud)
+        weight = f_alt * f_moon * f_clear
+        if darkness == "nautical":
+            weight = weight * NAUTICAL_WEIGHT
+    weight = np.where(shoot, weight, 0.0)
 
     runs = _blocks(shoot)
     longest = max(runs, key=lambda r: r[1] - r[0], default=None)
     usable = int(shoot.sum()) * STEP_MIN
     night["usable_minutes"] = usable
     night["usable_hours"] = round(usable / 60, 1)
-    # Windows are built from 10-minute slots; clip their edges to the exact dusk/dawn.
+    effective = float(weight.sum()) * STEP_MIN / 60
+    night["effective_hours"] = round(effective, 1)
     lo_clip = dusk[0] if dusk else -np.inf
     hi_clip = dawn[-1] if dawn else np.inf
 
@@ -342,23 +462,55 @@ def _night(day, t, sun, moon, illum, elong, tgt, wx, ens, s, target, tz, now):
 
     night["windows"] = [window(x, y) for x, y in runs]
     night["best_window"] = window(*longest) if longest else None
-    longest_h = (longest[1] - longest[0]) * STEP_MIN / 60 if longest else 0
-    night["longest_hours"] = round(longest_h, 1)
+    night["longest_hours"] = round((longest[1] - longest[0]) * STEP_MIN / 60, 1) if longest else 0
 
     ref = shoot if shoot.any() else (dark & have_wx)
-    def avg(arr):
+
+    def avg(arr, digits=0):
         vals = arr[ref & ~np.isnan(arr)]
-        return int(round(float(vals.mean()))) if len(vals) else None
+        if not len(vals):
+            return None
+        v = float(vals.mean())
+        return int(round(v)) if digits == 0 else round(v, digits)
 
     night["avg_cloud"] = avg(cloud)
     night["clouds"] = {"low": avg(wx["cloud_cover_low"]), "mid": avg(wx["cloud_cover_mid"]), "high": avg(wx["cloud_cover_high"])}
     night["avg_precip"] = avg(precip)
     night["avg_wind"] = avg(wx["wind_speed_10m"])
-    spread = wx["temperature_2m"] - wx["dew_point_2m"]
-    dark_spread = spread[dark & ~np.isnan(spread)]
-    night["dew_risk"] = bool(len(dark_spread) and (dark_spread < 2).mean() > 0.3)
+    gust_ref = gust[(shoot if shoot.any() else dark) & ~np.isnan(gust)]
+    night["max_gust"] = int(round(float(gust_ref.max()))) if len(gust_ref) else None
     temps = wx["temperature_2m"][dark & ~np.isnan(wx["temperature_2m"])]
     night["min_temp"] = int(round(float(temps.min()))) if len(temps) else None
+
+    # Dew: on clear nights optics radiate to the sky and run 2–4 °C below the air, so dew forms
+    # well before the air itself reaches its dew point.
+    spread = (wx["temperature_2m"] - wx["dew_point_2m"])[dark & ~np.isnan(wx["dew_point_2m"])]
+    dew = None
+    if len(spread):
+        if (spread <= DEW_LIKELY_C).mean() > 0.3:
+            dew = "likely"
+        elif (spread <= DEW_POSSIBLE_C).mean() > 0.3:
+            dew = "possible"
+    night["dew"] = dew
+    night["dew_risk"] = dew == "likely"
+
+    jet_avg = avg(jet)
+    night["sky"] = {
+        "sqm": site["sqm"],
+        "moon_mag": round(float(moon_mag[ref].max()), 1) if ref.any() and not planetary else None,
+        "aod": avg(aod, 2) if aod is not None else None,
+        "extinction": avg(k, 2),
+        "jet": jet_avg,
+        "seeing": skyquality.seeing_label(jet_avg),
+        "efficiency": round(effective / (usable / 60), 2) if usable else None,
+    }
+    if usable and f_alt is not None:
+        w = shoot
+        night["sky"]["losses"] = {
+            "moon": round(1 - float(f_moon[w].mean()), 2),
+            "altitude": round(1 - float(f_alt[w].mean()), 2),
+            "cloud": round(1 - float(f_clear[w].mean()), 2),
+        }
 
     if tgt is not None:
         in_dark = np.where(dark, tgt, -90)
@@ -368,37 +520,29 @@ def _night(day, t, sun, moon, illum, elong, tgt, wx, ens, s, target, tz, now):
             "peak_time": _hhmm(t[peak], tz),
             "transit": _hhmm(t[int(np.argmax(tgt))], tz),
             "hours_above_min": round(float((dark & (tgt >= s["min_alt"])).sum()) * STEP_MIN / 60, 1),
+            "min_airmass": round(float(skyquality.airmass(tgt[peak])), 2) if tgt[peak] > 0 else None,
         }
     else:
         night["target"] = None
 
-    # Score: long unbroken blocks matter most (stacking), then how much of the dark
-    # time is usable, then how clean those hours are.
-    if usable:
-        length = min(1.0, longest_h / 4)
-        coverage = usable / max(len(dark_idx) * STEP_MIN, 1)
-        clarity = 1 - (night["avg_cloud"] or 0) / max(s["max_cloud"], 1) * 0.6
-        moon_pen = 1 - 0.35 * float(((moon > MOON_HORIZON) & shoot).sum() / max(shoot.sum(), 1)) * float(illum[mid])
-        penalty = (0.9 if night["dew_risk"] else 1.0) * (0.85 if (night["avg_wind"] or 0) > 25 else 1.0)
-        if darkness == "nautical":
-            penalty *= 0.6
-        score = 100 * (0.5 * length + 0.3 * coverage + 0.2 * clarity) * moon_pen * penalty
-        night["score"] = int(round(max(1, min(100, score))))
+    if effective > 0:
+        night["score"] = max(1, int(round(100 * (1 - math.exp(-effective / SCORE_SCALE_H)))))
     else:
         night["score"] = 0
     night["verdict"] = _verdict(night["score"])
     night["confidence"] = _confidence(ens, longest, dark & future & moon_ok & tgt_ok)
-    night["reasons"] = _reasons(night, dark, future, have_wx, cloud_ok, precip_ok, moon_ok, tgt_ok, cloud, precip, s, target, tz, t, moon)
+    night["reasons"] = _reasons(night, dark, future, have_wx, cloud_ok, precip_ok, moon_ok, tgt_ok, raw_shoot, shoot,
+                                cloud, precip, moon_mag, gust, s, target, tz, t, planetary)
     why = _confidence_reason(night["confidence"])
     if why:
         after = next((i + 1 for i, r in enumerate(night["reasons"]) if " h shootable" in r), len(night["reasons"]))
         night["reasons"].insert(after, why)
 
-    # Chart timeline: an hour either side of sunset/sunrise.
+    # Chart timeline: an hour either side of sunset/sunrise (the whole span in polar night/day).
     below = np.flatnonzero(sun < 0)
     lo = max(0, (below[0] if len(below) else 0) - 6)
     hi = min(len(t), (below[-1] + 7) if len(below) else len(t))
-    rnd = lambda arr: [None if np.isnan(v) else round(float(v), 1) for v in arr[lo:hi]]  # noqa: E731
+    rnd = lambda arr, d=1: [None if np.isnan(v) else round(float(v), d) for v in arr[lo:hi]]  # noqa: E731
     night["timeline"] = {
         "t": [int(v) for v in t[lo:hi]],
         "labels": [_hhmm(v, tz) for v in t[lo:hi]],
@@ -413,6 +557,10 @@ def _night(day, t, sun, moon, illum, elong, tgt, wx, ens, s, target, tz, now):
         "temp": rnd(wx["temperature_2m"]),
         "dew": rnd(wx["dew_point_2m"]),
         "wind": rnd(wx["wind_speed_10m"]),
+        "gust": rnd(gust),
+        "jet": rnd(jet, 0),
+        "moon_mag": None if planetary else rnd(moon_mag, 2),
+        "quality": rnd(weight, 2),
         "shoot": [bool(v) for v in shoot[lo:hi]],
         "dark_level": dark_level,
         "ens_lo": rnd(ens["lo"]) if ens else None,
@@ -430,12 +578,16 @@ def _span(mask, t, tz, most=2):
     return " and ".join([", ".join(runs[:-1]), runs[-1]]) if len(runs) > 1 else (runs[0] if runs else "")
 
 
-def _reasons(n, dark, future, have_wx, cloud_ok, precip_ok, moon_ok, tgt_ok, cloud, precip, s, target, tz, t, moon):
+def _reasons(n, dark, future, have_wx, cloud_ok, precip_ok, moon_ok, tgt_ok, raw_shoot, shoot, cloud, precip,
+             moon_mag, gust, s, target, tz, t, planetary):
     out = []
+    if n["polar"] == "polar night":
+        out.append("Polar night: the sun stays down all day.")
     if n["darkness"] == "none":
-        return ["The sun never gets 12° below the horizon — no real darkness tonight."]
+        need = "6° (end of civil twilight)" if planetary else "12°"
+        return out + [f"The sun never gets {need} below the horizon — no real darkness tonight."]
     if n["darkness"] == "nautical":
-        out.append("No astronomical darkness (sun stays above −18°); using nautical twilight.")
+        out.append("No astronomical darkness (sun stays above −18°); using nautical twilight at reduced value.")
     usable_dark = dark & future
     if not usable_dark.any():
         return out + ["This night is already over."]
@@ -443,16 +595,30 @@ def _reasons(n, dark, future, have_wx, cloud_ok, precip_ok, moon_ok, tgt_ok, clo
     if not base.any():
         return out + ["Beyond the reach of the weather forecast."]
 
-    tname = target["short"] if target["id"] != "none" else None
+    tname = target["short"] if target["kind"] != "none" else None
+    sky_q = n["sky"]
     if n["usable_minutes"]:
-        out.append(f"{n['usable_hours']:g} h shootable, longest run {n['best_window']}.")
+        out.append(f"{n['usable_hours']:g} h shootable, longest run {n['best_window']} — worth "
+                   f"{n['effective_hours']:g} {'seeing-weighted' if planetary else 'dark-sky'} hours.")
+        losses = sky_q.get("losses") or {}
+        worst = max(losses.items(), key=lambda kv: kv[1], default=(None, 0))
+        if worst[1] >= 0.2:
+            what = {"moon": f"moonlight (sky up to {sky_q['moon_mag']:g} mag brighter)",
+                    "altitude": "low altitude (more air to look through)",
+                    "cloud": "patchy cloud within your limit"}[worst[0]]
+            out.append(f"Biggest loss: {what}, about {int(round(worst[1] * 100))}%.")
+    short = raw_shoot & ~shoot
+    if short.any() and not shoot.any():
+        out.append(f"Only gaps shorter than {MIN_RUN_MIN} min ({_span(short, t, tz)}) — too short to count.")
     fails = {
         "cloud": float((base & ~cloud_ok).mean()),
         "precip": float((base & ~precip_ok).mean()),
         "moon": float((base & ~moon_ok).mean()),
         "target": float((base & ~tgt_ok).mean()),
     }
-    for key, frac in sorted(fails.items(), key=lambda kv: -kv[1]):
+    # Biggest blocker first; on ties a target that's too low beats the weather (it can't change).
+    order = {"target": 0, "moon": 1, "cloud": 2, "precip": 3}
+    for key, frac in sorted(fails.items(), key=lambda kv: (-round(kv[1], 2), order[kv[0]])):
         if frac < 0.15:
             continue
         if key == "cloud":
@@ -463,16 +629,30 @@ def _reasons(n, dark, future, have_wx, cloud_ok, precip_ok, moon_ok, tgt_ok, clo
         elif key == "precip":
             out.append(f"Rain risk up to {int(np.nanmax(precip[base]))}% {_span(base & ~precip_ok, t, tz)}.")
         elif key == "moon":
-            out.append(f"Moon {n['moon']['illumination']}% lit and up {_span(usable_dark & (moon > MOON_HORIZON), t, tz)}.")
+            where = f"around {tname}" if tname else "overhead"
+            peak = float(np.nanmax(np.where(base, moon_mag, 0)))
+            out.append(f"Moon ({n['moon']['illumination']}% lit) brightens the sky {where} by up to {peak:.1f} mag "
+                       f"(limit {s['moon_limit']:g}) {_span(base & ~moon_ok, t, tz)}.")
         elif key == "target" and tname:
             if n["target"] and n["target"]["peak_alt"] < s["min_alt"]:
-                out.append(f"{tname} peaks at only {n['target']['peak_alt']:g}° while dark (min {s['min_alt']}°).")
+                where = "never rises here" if n["target"]["peak_alt"] < 0 else f"peaks at only {n['target']['peak_alt']:g}° while dark"
+                out.append(f"{tname} {where} (min {s['min_alt']}°).")
             else:
                 out.append(f"{tname} is above {s['min_alt']}° only {_span(usable_dark & tgt_ok, t, tz)}.")
-    if n["dew_risk"]:
-        out.append("Dew likely — run a dew heater.")
-    if (n["avg_wind"] or 0) > 25:
-        out.append(f"Windy ({n['avg_wind']} km/h) — expect tracking errors.")
+    aod = sky_q.get("aod")
+    if aod is not None and aod >= 0.3:
+        out.append(f"Hazy air (aerosol optical depth {aod:.2f}: smoke, dust or pollution) — targets dimmed, light pollution scattered more.")
+    if sky_q.get("seeing") == "poor":
+        out.append(f"Jet stream {sky_q['jet']} km/h overhead — poor seeing{'; planetary detail will suffer' if planetary else ', stars will be soft'}.")
+    elif planetary and sky_q.get("seeing") == "good":
+        out.append(f"Calm upper air (jet stream {sky_q['jet']} km/h) — good seeing likely.")
+    if n["dew"] == "likely":
+        out.append(f"Dew likely (air within {DEW_LIKELY_C:g} °C of its dew point) — run a dew heater.")
+    elif n["dew"] == "possible":
+        out.append("Dew possible later in the night — have a dew heater ready.")
+    if n["max_gust"] is not None and n["max_gust"] > GUST_WARN_KMH:
+        windy = (shoot if shoot.any() else dark) & (np.nan_to_num(gust) > GUST_WARN_KMH)
+        out.append(f"Gusts to {n['max_gust']} km/h {_span(windy, t, tz)} — expect tracking errors; shield the rig.")
     if not n["usable_minutes"] and len(out) == 0:
         out.append("No window meets your limits.")
     return out

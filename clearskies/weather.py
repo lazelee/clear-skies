@@ -1,4 +1,3 @@
-import json
 import time
 
 import requests
@@ -10,16 +9,17 @@ FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HOURLY = [
     "cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high",
     "precipitation_probability", "temperature_2m", "dew_point_2m",
-    "relative_humidity_2m", "wind_speed_10m", "visibility",
+    "relative_humidity_2m", "wind_speed_10m", "wind_gusts_10m", "visibility",
+    "wind_speed_250hPa",  # jet stream: the main forecastable driver of bad seeing
 ]
 # Hourly values that cover the hour *before* their timestamp; everything else is instantaneous.
-PRECEDING_HOUR = {"precipitation_probability"}
+PRECEDING_HOUR = {"precipitation_probability", "wind_gusts_10m"}
 CACHE_SECONDS = 30 * 60
 
 
 def fetch(lat, lon):
     """16-day hourly forecast. Times are unix seconds (UTC), so no DST ambiguity."""
-    key = f"{round(lat, 3)},{round(lon, 3)}"
+    key = f"wx2:{round(lat, 3)},{round(lon, 3)}"
     cached = db.cache_get(key, CACHE_SECONDS)
     if cached:
         return cached
@@ -92,5 +92,31 @@ def fetch_ensemble(lat, lon):
     if not models:
         return None
     data = {"time": hourly["time"], "models": models, "fetched_at": int(time.time())}
+    db.cache_put(key, data)
+    return data
+
+
+AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+
+
+def fetch_aerosol(lat, lon):
+    """
+    Hourly aerosol optical depth at 550 nm (CAMS, ~5 days ahead): haze, smoke and dust that
+    dim targets and scatter light pollution. Returns {"time", "aod"} or None if unavailable.
+    """
+    key = f"aod:{round(lat, 2)},{round(lon, 2)}"
+    cached = db.cache_get(key, ENSEMBLE_CACHE_SECONDS)
+    if cached:
+        return cached
+    params = {"latitude": lat, "longitude": lon, "hourly": "aerosol_optical_depth", "timeformat": "unixtime", "forecast_days": 7}
+    try:
+        res = requests.get(AIR_QUALITY_URL, params=params, timeout=15)
+        res.raise_for_status()
+        hourly = res.json()["hourly"]
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+    if not any(v is not None for v in hourly.get("aerosol_optical_depth", [])):
+        return None
+    data = {"time": hourly["time"], "aod": hourly["aerosol_optical_depth"]}
     db.cache_put(key, data)
     return data

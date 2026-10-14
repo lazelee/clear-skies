@@ -1,5 +1,6 @@
 """Local web UI for Clear Skies: python app.py → http://localhost:5050"""
 import os
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -57,6 +58,19 @@ def target_list():
     return jsonify(targets=targets.as_list(), defaults=planner.DEFAULTS)
 
 
+@app.get("/api/targets/search")
+def target_search():
+    """Offline, as-you-type matches from the presets, planets and the 13k-object catalog."""
+    return jsonify(results=targets.search(request.args.get("q", "")))
+
+
+@app.get("/api/targets/resolve")
+def target_resolve():
+    """Anything else: coordinates, SIMBAD (via CDS Sesame) or JPL Horizons."""
+    out = targets.resolve(request.args.get("q", ""))
+    return jsonify(out), (200 if "target" in out else 404)
+
+
 @app.get("/api/forecast")
 def forecast():
     plan = _plan(request.args)
@@ -82,19 +96,20 @@ def ics():
     start, end = at(start_s), at(end_s)
     fmt = lambda d: d.astimezone(ZoneInfo("UTC")).strftime("%Y%m%dT%H%M%SZ")  # noqa: E731
     target = plan["target"]
-    what = target["name"] if target["id"] != "none" else "Astrophotography"
+    safe_id = re.sub(r"[^A-Za-z0-9]+", "-", target["short"] or target["id"]).strip("-")[:40] or "target"
+    what = target["name"] if target["kind"] != "none" else "Astrophotography"
     desc = " ".join(night["reasons"]) + f" Moon {night['moon']['illumination']}% ({night['moon']['phase']})."
     body = "\r\n".join([
         "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//clear-skies//EN", "BEGIN:VEVENT",
-        f"UID:{night['date']}-{target['id']}-{plan['location']['lat']:.3f}{plan['location']['lon']:.3f}@clear-skies",
+        f"UID:{night['date']}-{safe_id}-{plan['location']['lat']:.3f}{plan['location']['lon']:.3f}@clear-skies",
         f"DTSTAMP:{fmt(datetime.now(tz))}", f"DTSTART:{fmt(start)}", f"DTEND:{fmt(end)}",
-        f"SUMMARY:{what} — {night['verdict']} night ({night['score']})",
+        f"SUMMARY:{what} — {night['verdict']} night ({night['score']}, {night['effective_hours']:g} h effective)",
         f"LOCATION:{plan['location']['label']}",
         "DESCRIPTION:" + desc.replace(",", "\\,").replace(";", "\\;"),
         "BEGIN:VALARM", "TRIGGER:-PT60M", "ACTION:DISPLAY", "DESCRIPTION:Set up the rig", "END:VALARM",
         "END:VEVENT", "END:VCALENDAR", "",
     ])
-    name = f"clear-skies-{night['date']}-{target['id']}.ics"
+    name = f"clear-skies-{night['date']}-{safe_id}.ics"
     return Response(body, mimetype="text/calendar", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
