@@ -77,6 +77,8 @@ fast lookups). Delete either to start fresh. Settings in the dashboard are kept 
 - **First run is slow for a new place**: it downloads 15 years of weather history for the outlook (a few
   seconds); after that it's cached for a month.
 - **PowerShell won't run `Activate.ps1`**: run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
+- **`NotOpenSSLWarning` at startup** (the Python that ships with macOS): harmless, everything still works.
+  Installing Python from python.org or Homebrew makes it go away.
 
 ## How a night is judged
 The rest of this page explains the science. You don't need it to use the tool.
