@@ -93,7 +93,7 @@ def ics():
         f"DTSTAMP:{fmt(datetime.now(tz))}", f"DTSTART:{fmt(start)}", f"DTEND:{fmt(end)}",
         f"SUMMARY:{what} — {night['verdict']} night ({night['score']})",
         f"LOCATION:{plan['location']['label']}",
-        "DESCRIPTION:" + desc.replace(",", "\\,").replace(";", "\;"),
+        "DESCRIPTION:" + desc.replace(",", "\\,").replace(";", "\\;"),
         "BEGIN:VALARM", "TRIGGER:-PT60M", "ACTION:DISPLAY", "DESCRIPTION:Set up the rig", "END:VALARM",
         "END:VEVENT", "END:VCALENDAR", "",
     ])
