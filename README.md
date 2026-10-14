@@ -5,7 +5,7 @@ sky** (a Messier galaxy, a Sharpless nebula, a star, Jupiter, a comet), and Clea
 worth imaging, ranks every night by how much real imaging value it holds, says how sure the forecast is,
 and explains in plain English what's costing you.
 
-<p align="center"><img src="assets/ui_overview.png" width="760" alt="Clear Skies dashboard"></p>
+<p align="center"><img src="assets/clear-skies-dashboard.png" width="760" alt="Clear Skies dashboard"></p>
 
 ## How a night is judged
 
@@ -92,7 +92,7 @@ Open **http://localhost:5050**.
 - **Night vision** switches the whole UI to red, so checking it at the telescope doesn't ruin your dark adaptation
 - **History** lists past forecasts from the local SQLite log
 
-<p align="center"><img src="assets/ui_night_detail.png" width="760" alt="Night detail with sky-quality tiles and timeline chart"></p>
+<p align="center"><img src="assets/clear-skies-night-detail.png" width="760" alt="Night detail with sky-quality tiles and timeline chart"></p>
 
 ## Command line
 ```bash
