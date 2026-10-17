@@ -219,4 +219,4 @@ tests/              physics and worldwide planner tests
 - Krisciunas & Schaefer 1991, PASP 103, 1033; Kasten & Young 1989, Applied Optics 28, 4735
 
 ## License
-MIT for the code; see [LICENSE](LICENSE). The bundled OpenNGC catalog (`clearskies/data/openngc.json.gz`) remains under CC-BY-SA-4.0.
+MIT for the code; see [LICENSE](LICENSE). The bundled OpenNGC catalog (`clearskies/data/openngc.json.gz`) remains under CC-BY-SA-4.0; see [NOTICE](NOTICE).

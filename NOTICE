@@ -1,0 +1,8 @@
+Clear Skies
+Copyright (c) 2026 Caleb Lee
+
+Third-party data bundled in this repository keeps its own license:
+
+- clearskies/data/openngc.json.gz is derived from OpenNGC by Mattia Verga
+  (https://github.com/mattiaverga/OpenNGC), licensed under CC-BY-SA-4.0
+  (https://creativecommons.org/licenses/by-sa/4.0/).
