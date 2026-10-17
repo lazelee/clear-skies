@@ -49,7 +49,7 @@ No git? Use **Code → Download ZIP** on GitHub, unzip it and start from `cd cle
    if you've measured it. **★ Save location** keeps a place for one-click access.
 
 Other buttons: **Add to calendar** (an `.ics` event for the best window, with a 1-hour setup reminder),
-**Night vision** (an all-red UI that keeps your eyes dark-adapted at the telescope) and **History** (past forecasts).
+**Night vision** (an all-red UI that keeps your eyes dark-adapted to the dark) and **History** (past forecasts).
 
 ### Command line
 The same forecast as a table in the terminal (activate the environment first, as above):
