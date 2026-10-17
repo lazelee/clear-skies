@@ -217,3 +217,6 @@ tests/              physics and worldwide planner tests
 - [OpenNGC](https://github.com/mattiaverga/OpenNGC) by Mattia Verga: NGC/IC/Messier catalog, CC-BY-SA-4.0
 - [Light pollution atlas](https://djlorenz.github.io/astronomy/lp/) by David Lorenz, from NOAA VIIRS data (Earth Observation Group, Colorado School of Mines)
 - Krisciunas & Schaefer 1991, PASP 103, 1033; Kasten & Young 1989, Applied Optics 28, 4735
+
+## License
+MIT for the code; see [LICENSE](LICENSE). The bundled OpenNGC catalog (`clearskies/data/openngc.json.gz`) remains under CC-BY-SA-4.0.
