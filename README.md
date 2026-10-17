@@ -1,7 +1,7 @@
 # Clear Skies
 
 A 16-day astrophotography planner you run locally. Pick **any place on Earth** and **anything in the
-sky** (a Messier galaxy, a Sharpless nebula, a star, Jupiter, a comet), and Clear Skies finds the hours
+sky** (a Messier galaxy, a nebula, a star, Jupiter, a comet), and Clear Skies finds the hours
 worth imaging, ranks every night by how much real imaging value it holds, says how sure the forecast is,
 and explains in plain English what's costing you.
 
